@@ -46,6 +46,8 @@ def main() -> None:
                     "raw_agreement": result.metrics.raw_agreement,
                     "cohen_kappa": result.metrics.cohen_kappa,
                     "n_items": result.metrics.n_items,
+                    "n_blank": len(result.blank_copies),
+                    "n_non_transcribed": len(result.non_transcribed),
                 },
             )
     finally:
@@ -55,6 +57,11 @@ def main() -> None:
 
     logger.info("Accord brut : %.1f%%", result.metrics.raw_agreement * 100)
     logger.info("Kappa de Cohen : %.3f", result.metrics.cohen_kappa)
+    logger.info(
+        "Copies vierges auto-codées « 0 » : %d | copies non transcrites (exclues) : %d",
+        len(result.blank_copies),
+        len(result.non_transcribed),
+    )
 
     logger.info("Courbe de renvoi humain :")
     for point in referral_curve(result.y_true, result.y_pred, result.confidences):

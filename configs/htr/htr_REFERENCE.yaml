@@ -17,6 +17,11 @@
 # Nom UNIQUE du run (préfixe des fichiers de sortie). REQUIS.
 name: htr_REFERENCE
 
+# Nombre d'échantillons transcrits EN PARALLÈLE (le endpoint vLLM batche les
+# requêtes concurrentes). Principal levier de temps mural. [défaut : 8]
+# 1 = séquentiel. Monter si le serveur tient, redescendre en cas de timeouts.
+concurrency: 8
+
 # ── Modèle de transcription ─────────────────────────────────────────────────
 # Validé par ModelConfig, mais l'HTR n'exploite QUE les champs ci-dessous
 # (la sortie est du texte libre, pas du JSON) :

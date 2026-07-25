@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -128,41 +129,59 @@ def run_htr_benchmark(
     transcriber: VLMTranscriber,
     run_name: str,
     output_dir: str | Path = "data/processed",
+    concurrency: int = 8,
 ) -> HTRBenchmarkResult:
     """Transcrit tous les échantillons et calcule les métriques HTR.
 
+    Les échantillons sont transcrits en parallèle (`concurrency` requêtes vLLM
+    concurrentes), mais les enregistrements sont ré-ordonnés dans l'ordre de
+    `samples` : la sortie est identique au mode séquentiel (transcription
+    déterministe à température 0). `concurrency=1` = ancien comportement.
+
     Args:
         samples: Échantillons Scoledit à transcrire.
-        transcriber: Transcripteur VLM à utiliser.
+        transcriber: Transcripteur VLM à utiliser (thread-safe).
         run_name: Nom du run (préfixe du fichier de prédictions JSONL).
         output_dir: Dossier de sortie des prédictions.
+        concurrency: nombre de transcriptions menées en parallèle.
 
     Returns:
         Résultat du benchmark : prédictions par échantillon, CER/WER moyens
         (micro-pondérés par la longueur de la référence) et scans en échec.
     """
-    records = []
-    failed = []
-    for s in tqdm(samples, desc=f"Transcription ({run_name})"):
-        hypothese = transcriber.transcribe(s.image_path)
-        if not hypothese.strip():
-            failed.append(s.scan)
-        m: TranscriptionMetrics = compute_transcription_metrics(s.reference, hypothese)
-        records.append(
-            {
-                "scan": s.scan,
-                "level": s.level,
-                "reference": s.reference,
-                "hypothese": hypothese,
-                "cer": m.cer,
-                "wer": m.wer,
-                "cer_normalise": m.cer_normalise,
-                "wer_normalise": m.wer_normalise,
-                "n_char_ref": m.n_char_ref,
-                "n_mots_ref": m.n_mots_ref,
-                "transcrit": bool(hypothese.strip()),
-            }
-        )
+
+    def _transcribe_one(sample: ScoledtSample) -> dict:
+        """Transcrit un échantillon et construit son enregistrement (thread worker)."""
+        hypothese = transcriber.transcribe(sample.image_path)
+        m: TranscriptionMetrics = compute_transcription_metrics(sample.reference, hypothese)
+        return {
+            "scan": sample.scan,
+            "level": sample.level,
+            "reference": sample.reference,
+            "hypothese": hypothese,
+            "cer": m.cer,
+            "wer": m.wer,
+            "cer_normalise": m.cer_normalise,
+            "wer_normalise": m.wer_normalise,
+            "n_char_ref": m.n_char_ref,
+            "n_mots_ref": m.n_mots_ref,
+            "transcrit": bool(hypothese.strip()),
+        }
+
+    desc = f"Transcription ({run_name}, {concurrency} en parallèle)"
+    if concurrency <= 1:
+        records = [_transcribe_one(s) for s in tqdm(samples, desc=desc)]
+    else:
+        # Résultats stockés par indice d'origine → ordre de `samples` préservé,
+        # quel que soit l'ordre d'achèvement des workers.
+        records = [None] * len(samples)  # type: ignore[list-item]
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            index_of = {executor.submit(_transcribe_one, s): i for i, s in enumerate(samples)}
+            for future in tqdm(as_completed(index_of), total=len(samples), desc=desc):
+                records[index_of[future]] = future.result()
+
+    # Échecs (transcription vide), dans l'ordre des échantillons.
+    failed = [r["scan"] for r in records if not r["transcrit"]]
 
     df = pd.DataFrame(records)
     # CER/WER micro-pondérés par la longueur de la référence

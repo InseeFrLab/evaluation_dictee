@@ -48,7 +48,12 @@ def main() -> None:
         read_final_state=cfg.get("read_final_state", True),
     )
 
-    result = run_htr_benchmark(samples, transcriber, run_name=cfg["name"])
+    result = run_htr_benchmark(
+        samples,
+        transcriber,
+        run_name=cfg["name"],
+        concurrency=cfg.get("concurrency", 8),
+    )
 
     logger.info("CER moyen : %.1f%%", result.mean_cer * 100)
     logger.info("WER moyen : %.1f%%", result.mean_wer * 100)

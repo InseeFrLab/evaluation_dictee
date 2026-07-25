@@ -57,6 +57,11 @@ class DataConfig(BaseModel):
     # Grille JSON (versionnée dans configs/) : mot attendu + fautes connues par item.
     grid_path: str = "configs/grille_dictee_2015.json"
     limit: int | None = None  # limiter le nombre de copies (tests rapides)
+    # Seuil de densité d'encre en dessous duquel une copie est jugée VIERGE (l'élève
+    # n'a rien écrit : seul le pré-imprimé marque ~2%). Ces copies sont codées "0"
+    # (absent) sur tous les items, sans appel modèle, identiquement pour toutes les
+    # méthodes — évite que l'end-to-end hallucine la référence. 0 pour désactiver.
+    blank_ink_threshold: float = 0.025
 
 
 class GridConfig(BaseModel):
@@ -129,6 +134,8 @@ class HTRExperimentConfig(BaseModel):
 
     name: str = Field(..., description="Nom unique du run.")
     seed: int = 42
+    # Nombre d'échantillons transcrits EN PARALLÈLE (cf. `concurrency` du scoring).
+    concurrency: int = Field(default=8, ge=1)
     model: ModelConfig
     data: HTRDataConfig
     read_final_state: bool = True  # en cas de rature, lire l'état final

@@ -85,6 +85,9 @@ def patched(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(bench, "load_grid", lambda _p: _FakeGrid())
     monkeypatch.setattr(bench, "copy_trace", _no_trace)
+    # Neutralise le chargement image + la détection copie vierge (non vierge par défaut).
+    monkeypatch.setattr(bench, "load_image", lambda _p: object())
+    monkeypatch.setattr(bench, "ink_ratio", lambda _img: 0.5)
 
 
 def _config(n: int) -> ExperimentConfig:
@@ -142,6 +145,32 @@ def test_failures_and_non_transcribed(patched, monkeypatch, tmp_path: Path) -> N
     assert "c001.png" not in written  # échec → non écrit
     assert "c002.png" not in written  # non transcrite → non écrit
     assert "c000.png" in written
+
+
+def test_copie_vierge_auto_codee_zero(patched, monkeypatch, tmp_path: Path) -> None:
+    """Une copie vierge est codée '0' sans appel modèle, identiquement pour toute méthode."""
+    copies = _copies(4)
+    monkeypatch.setattr(bench, "load_dataset", lambda **_k: copies)
+    # c001 est sous le seuil d'encre → vierge ; les autres au-dessus.
+    monkeypatch.setattr(bench, "load_image", lambda path: path)  # identité : garde le chemin
+    monkeypatch.setattr(bench, "ink_ratio", lambda path: 0.01 if "c001" in path else 0.5)
+    scorer = FakeScorer()
+
+    result = bench.run_benchmark(_config(4), scorer, output_dir=tmp_path, concurrency=1)
+
+    assert result.blank_copies == ["c001.png"]
+    assert "c001.png" not in scorer.scored  # aucune inférence sur une copie vierge
+    recs = [
+        json.loads(line) for line in _read_lines(tmp_path / "test_run_predictions.jsonl")
+    ]
+    vierge = [r for r in recs if r["copy_id"] == "c001.png"]
+    assert len(vierge) == 3
+    assert all(r["y_pred"] == "0" for r in vierge)
+    assert all(r["blank"] is True for r in vierge)
+    assert all(r["confidence"] == 1.0 for r in vierge)
+    # Une copie non vierge reste scorée normalement et marquée blank=False.
+    non_vierge = [r for r in recs if r["copy_id"] == "c000.png"]
+    assert all(r["blank"] is False for r in non_vierge)
 
 
 def test_resume_skips_processed(patched, monkeypatch, tmp_path: Path) -> None:

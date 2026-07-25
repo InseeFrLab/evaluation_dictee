@@ -11,6 +11,7 @@ import io
 from dataclasses import dataclass, field
 
 import fsspec
+import numpy as np
 from PIL import Image
 
 
@@ -49,6 +50,22 @@ def load_image(path: str) -> Image.Image:
     with fsspec.open(path, "rb") as f:
         img = Image.open(io.BytesIO(f.read()))
     return img.convert("L")
+
+
+def ink_ratio(image: Image.Image) -> float:
+    """Proportion de pixels sombres (encre) d'une image en niveaux de gris.
+
+    Sert à repérer les formulaires vierges (l'élève n'a rien écrit) : seul le
+    pré-imprimé (titre, lignes, cadre, pied de page) marque quelques pour cent.
+
+    Args:
+        image: Image PIL (convertie en "L" si besoin).
+
+    Returns:
+        Fraction de pixels d'intensité < 128, entre 0.0 et 1.0.
+    """
+    arr = np.asarray(image.convert("L"))
+    return float((arr < 128).mean())
 
 
 def load_labels(csv_path: str) -> dict[str, dict[str, str]]:

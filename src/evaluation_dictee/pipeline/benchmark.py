@@ -17,9 +17,9 @@ from tqdm import tqdm
 from evaluation_dictee.config import ExperimentConfig
 from evaluation_dictee.data import reference
 from evaluation_dictee.data.grid import load_grid
-from evaluation_dictee.data.loaders import Copy, load_dataset
+from evaluation_dictee.data.loaders import Copy, ink_ratio, load_dataset, load_image
 from evaluation_dictee.evaluation.metrics import ScoringMetrics, compute_scoring_metrics
-from evaluation_dictee.models.base import Scorer
+from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
 from evaluation_dictee.utils.logging import get_logger
 from evaluation_dictee.utils.tracking import copy_trace
 
@@ -38,6 +38,7 @@ class BenchmarkResult:
     copy_ids: list[str] = field(default_factory=list)
     predictions_path: Path | None = None
     non_transcribed: list[str] = field(default_factory=list)
+    blank_copies: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -49,6 +50,7 @@ class _CopyOutcome:
     lines: str = ""  # lignes JSONL prêtes à écrire (status "ok")
     error: str = ""  # message d'erreur (status "failed")
     n_attempts: int = 1  # nombre d'essais (status "non_transcribed")
+    blank: bool = False  # copie vierge auto-codée "0" (status "ok")
 
 
 def _load_processed_copy_ids(predictions_path: Path) -> set[str]:
@@ -153,9 +155,11 @@ def run_benchmark(
     reference_text = load_grid(config.data.grid_path).reference_text
     scheme = config.grid.scheme
     workers = concurrency if concurrency is not None else config.concurrency
+    blank_threshold = config.data.blank_ink_threshold
 
     non_transcrites: list[str] = []
     failed_copies: list[tuple[str, str]] = []  # (copy_id, message d'erreur)
+    blank_copies: list[str] = []  # copies vierges auto-codées "0"
 
     def _score_one(copy: Copy) -> _CopyOutcome:
         """Score une copie et prépare ses lignes JSONL (exécuté dans un thread worker).
@@ -166,23 +170,45 @@ def run_benchmark(
         """
         # Une trace Langfuse par copie (no-op si Langfuse indisponible, trace vaut None).
         with copy_trace(copy) as trace:
+            # Détection copie vierge AVANT tout appel modèle : formulaire non rempli
+            # (seul le pré-imprimé marque quelques % d'encre). Traitée identiquement
+            # pour toutes les méthodes → tous les items codés "0" (absent), sans appel
+            # modèle. Empêche l'end-to-end d'halluciner la référence sur une page vide.
             try:
-                prediction = scorer.score_copy(copy, reference_text)
-            except Exception as exc:  # noqa: BLE001 — on veut TOUT rattraper ici
+                is_blank = (
+                    blank_threshold > 0 and ink_ratio(load_image(copy.image_path)) < blank_threshold
+                )
+            except Exception as exc:  # noqa: BLE001 — image illisible : on remonte un échec
                 if trace is not None:
                     trace.update(level="ERROR", status_message=str(exc))
                 return _CopyOutcome(copy.copy_id, "failed", error=str(exc))
 
-            if not prediction.transcribed:
-                if trace is not None:
-                    trace.update(
-                        level="WARNING",
-                        status_message="copie non transcrite",
-                        output={"transcribed": False, "n_attempts": prediction.n_attempts},
-                    )
-                return _CopyOutcome(
-                    copy.copy_id, "non_transcribed", n_attempts=prediction.n_attempts
+            if is_blank:
+                prediction: CopyPrediction = CopyPrediction(
+                    copy_id=copy.copy_id,
+                    items=[
+                        ItemPrediction(item_id=i, code="0", confidence=1.0, transcription="")
+                        for i in copy.item_ids
+                    ],
                 )
+            else:
+                try:
+                    prediction = scorer.score_copy(copy, reference_text)
+                except Exception as exc:  # noqa: BLE001 — on veut TOUT rattraper ici
+                    if trace is not None:
+                        trace.update(level="ERROR", status_message=str(exc))
+                    return _CopyOutcome(copy.copy_id, "failed", error=str(exc))
+
+                if not prediction.transcribed:
+                    if trace is not None:
+                        trace.update(
+                            level="WARNING",
+                            status_message="copie non transcrite",
+                            output={"transcribed": False, "n_attempts": prediction.n_attempts},
+                        )
+                    return _CopyOutcome(
+                        copy.copy_id, "non_transcribed", n_attempts=prediction.n_attempts
+                    )
 
             pred_by_id = {it.item_id: it for it in prediction.items}
             records = []
@@ -201,6 +227,8 @@ def run_benchmark(
                         "transcription": pred.transcription if pred else None,
                         "comparaison": pred.comparaison if pred else None,
                         "raw_transcription": prediction.raw_transcription,
+                        "approach": config.approach,
+                        "blank": is_blank,
                     }
                 )
                 if pred_code == true_code:
@@ -208,11 +236,17 @@ def run_benchmark(
 
             if trace is not None and records:
                 accord_copie = n_accord / len(records)
-                trace.update(output={"n_items": len(records), "raw_agreement": accord_copie})
+                trace.update(
+                    output={
+                        "n_items": len(records),
+                        "raw_agreement": accord_copie,
+                        "blank": is_blank,
+                    }
+                )
                 trace.score_trace(name="raw_agreement", value=accord_copie)
 
             lines = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
-            return _CopyOutcome(copy.copy_id, "ok", lines=lines)
+            return _CopyOutcome(copy.copy_id, "ok", lines=lines, blank=is_blank)
 
     def _consume(outcome: _CopyOutcome, f_pred: object) -> None:
         """Écrit/comptabilise le résultat d'une copie (thread principal uniquement)."""
@@ -231,6 +265,8 @@ def run_benchmark(
                 outcome.copy_id,
             )
         else:  # "ok"
+            if outcome.blank:
+                blank_copies.append(outcome.copy_id)
             f_pred.write(outcome.lines)  # type: ignore[attr-defined]
             # Flush + fsync : garantit que la copie écrite survit à un crash ultérieur.
             f_pred.flush()  # type: ignore[attr-defined]
@@ -309,6 +345,15 @@ def run_benchmark(
             non_transcrites,
         )
 
+    if blank_copies:
+        logger.info(
+            "%d copie(s) vierge(s) détectée(s) (encre < %.1f%%) et auto-codée(s) "
+            '"0" (absent) sans appel modèle : %s',
+            len(blank_copies),
+            blank_threshold * 100,
+            blank_copies,
+        )
+
     metrics = compute_scoring_metrics(y_true, y_pred)
     return BenchmarkResult(
         metrics=metrics,
@@ -319,4 +364,5 @@ def run_benchmark(
         copy_ids=copy_ids,
         predictions_path=out_path,
         non_transcribed=non_transcrites,
+        blank_copies=blank_copies,
     )

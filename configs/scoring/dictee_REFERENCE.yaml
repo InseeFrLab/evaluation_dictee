@@ -68,11 +68,11 @@ model:
 # ── Modèle de l'ÉTAPE 2 (codage textuel), UNIQUEMENT si approach: two_stage ───
 # Peut être un modèle texte seul (kind: llm), plus léger que l'étape 1.
 # Omettre ce bloc en end_to_end (ou réutilise `model` si absent en two_stage).
-# model_stage2:
-#   name: gemma4-26b-moe
-#   kind: llm
-#   temperature: 0.0
-#   max_tokens: 8192
+model_stage2:
+  name: gemma4-26b-moe
+  kind: llm
+  temperature: 0.0
+  max_tokens: 8192
 
 # ── Données ───────────────────────────────────────────────────────────────
 data:

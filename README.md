@@ -186,6 +186,8 @@ uv run scripts/run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml
 
 Cela produit `data/processed/htr_REFERENCE_htr_predictions.jsonl` et affiche
 le CER/WER moyens. Analyse dans `notebooks/05_analyse_transcription_htr.ipynb`.
+La transcription est elle aussi **parallélisée** (champ `concurrency` du YAML HTR,
+défaut 8) ; l'ordre des échantillons en sortie est préservé.
 
 **Exporter les prédictions vers S3.** Le pipeline écrit en local (append + fsync
 par copie, pour la reprise sur crash). Une fois un run terminé, on pousse le JSONL

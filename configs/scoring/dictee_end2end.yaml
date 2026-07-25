@@ -1,0 +1,45 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — MÉTHODE C (end-to-end)
+# ═══════════════════════════════════════════════════════════════════════════
+#  Un VLM lit l'image ET code chaque item en une seule passe.
+#  Dérivé de dictee_REFERENCE.yaml : voir ce fichier pour la doc exhaustive de
+#  chaque paramètre (les champs omis reprennent leur valeur par défaut).
+#
+#  Lancer : uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml
+#  Sortie  : data/processed/dictee_end2end_predictions.jsonl  (approach="end_to_end")
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: dictee_end2end
+seed: 42
+concurrency: 8
+
+approach: end_to_end
+
+model:
+  name: gemma4-26b-moe
+  kind: vlm
+  temperature: 0.0
+  max_tokens: 8192
+  request_logprobs: true
+  max_retries: 2
+  disable_thinking: true
+  structured_output: true
+
+# Pas de bloc model_stage2 en end_to_end (une seule passe).
+
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: C
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  chain_of_thought: false
