@@ -1,18 +1,7 @@
-"""Diagnostic des écarts entre le modèle et l'annotateur.
+"""Diagnostic des écarts modèle/annotateur : d'où viennent les désaccords.
 
-Ce module ne calcule pas des métriques agrégées (voir report.py) mais cherche à
-EXPLIQUER d'où viennent les désaccords, et à pointer les copies à inspecter
-visuellement. Il répond à des questions précises :
-
-- Y a-t-il un effet de POSITION ? (l'accord se dégrade-t-il vers la fin de la
-  dictée — signature d'un décalage propagé par un oubli de mot)
-- Le modèle est-il SUR-CONFIANT ? (confiance élevée sur des prédictions fausses)
-- Quelles copies concentrent les désaccords (cas types à regarder) ?
-- Le motif des désaccords ressemble-t-il à un DÉCALAGE (run de codes 9/0
-  consécutifs) plutôt qu'à des erreurs isolées ?
-
-Toutes les fonctions prennent le DataFrame de prédictions chargé par
-report.load_predictions et renvoient des DataFrames.
+Pointe les copies à inspecter (effet de position, sur-confiance, décalages).
+Complète report.py, qui agrège ; ici on cherche les causes.
 """
 
 from __future__ import annotations
@@ -21,14 +10,15 @@ import pandas as pd
 
 
 def add_position(df: pd.DataFrame, ordered_item_ids: list[str]) -> pd.DataFrame:
-    """Ajoute une colonne `position` (rang de l'item dans la dictée, 1..N).
+    """Ajoute les colonnes `position` (rang dans la dictée, 1..N) et `correct`.
 
     Args:
-        df: prédictions (copy_id, item_id, y_true, y_pred, confidence).
-        ordered_item_ids: item_ids dans l'ordre du texte (depuis la grille).
+        df: prédictions à l'item (colonnes item_id, y_true, y_pred).
+        ordered_item_ids: item_ids dans l'ordre de la dictée (définit le rang).
 
     Returns:
-        Copie du DataFrame avec colonnes `position` et `correct` (booléen).
+        Une copie du DataFrame avec `position` (rang de l'item) et `correct`
+        (y_true == y_pred).
     """
     rang = {iid: i + 1 for i, iid in enumerate(ordered_item_ids)}
     out = df.copy()
@@ -42,16 +32,15 @@ def accuracy_by_position(
 ) -> pd.DataFrame:
     """Accord moyen par tranche de position dans la dictée.
 
-    Un accord qui chute en fin de dictée est la signature d'un décalage propagé
-    (oubli de mot non géré, fusion, ligne sautée...).
+    Une chute en fin de dictée signe un décalage propagé (oubli de mot, ligne sautée).
 
     Args:
-        df: prédictions.
-        ordered_item_ids: ordre des items.
+        df: prédictions à l'item.
+        ordered_item_ids: item_ids dans l'ordre de la dictée.
         n_bins: nombre de tranches de position.
 
     Returns:
-        DataFrame par tranche : position moyenne, accord, effectif.
+        Un DataFrame, une ligne par tranche : position moyenne, accord et effectif.
     """
     d = add_position(df, ordered_item_ids)
     d["tranche"] = pd.cut(d["position"], bins=n_bins)
@@ -64,32 +53,29 @@ def accuracy_by_position(
 
 
 def position_accuracy_correlation(df: pd.DataFrame, ordered_item_ids: list[str]) -> float:
-    """Corrélation entre position et justesse (négative = dégradation en fin).
+    """Corrélation de Pearson position/justesse (négative = dégradation en fin).
 
     Args:
-        df: prédictions.
-        ordered_item_ids: ordre des items.
+        df: prédictions à l'item.
+        ordered_item_ids: item_ids dans l'ordre de la dictée.
 
     Returns:
-        Coefficient de corrélation de Pearson entre position et `correct`.
+        Le coefficient de corrélation de Pearson entre position et justesse.
     """
     d = add_position(df, ordered_item_ids)
     return float(d["position"].corr(d["correct"].astype(float)))
 
 
 def per_copy_position_effect(df: pd.DataFrame, ordered_item_ids: list[str]) -> pd.DataFrame:
-    """Pour chaque copie, compare l'accord 1re moitié vs 2de moitié de la dictée.
-
-    Une chute marquée en 2de moitié sur une copie donnée suggère un décalage
-    déclenché en cours de copie (typiquement un mot oublié par l'élève).
+    """Compare, par copie, l'accord 1re vs 2de moitié (une chute signe un décalage en cours).
 
     Args:
-        df: prédictions.
-        ordered_item_ids: ordre des items.
+        df: prédictions à l'item.
+        ordered_item_ids: item_ids dans l'ordre de la dictée.
 
     Returns:
-        DataFrame par copie : accord_moitie1, accord_moitie2, chute (m1 - m2),
-        trié par chute décroissante (les plus suspectes en tête).
+        Un DataFrame indexé par copy_id : accord de chaque moitié et `chute`
+        (moitié 1 − moitié 2), trié par chute décroissante.
     """
     d = add_position(df, ordered_item_ids)
     milieu = len(ordered_item_ids) / 2
@@ -111,17 +97,16 @@ def per_copy_position_effect(df: pd.DataFrame, ordered_item_ids: list[str]) -> p
 def longest_disagreement_run(df: pd.DataFrame, ordered_item_ids: list[str]) -> pd.DataFrame:
     """Plus longue séquence de désaccords CONSÉCUTIFS par copie.
 
-    Des erreurs isolées dispersées = vraies erreurs de codage.
-    Une longue séquence ininterrompue de désaccords = signature d'un décalage
-    (tous les items après un oubli sont faux jusqu'à un éventuel recalage).
+    Erreurs isolées = vraies erreurs de codage ; longue séquence = signature d'un décalage.
 
     Args:
-        df: prédictions.
-        ordered_item_ids: ordre des items.
+        df: prédictions à l'item.
+        ordered_item_ids: item_ids dans l'ordre de la dictée.
 
     Returns:
-        DataFrame par copie : n_desaccords, plus_longue_sequence,
-        position_debut_sequence. Trié par plus_longue_sequence décroissante.
+        Un DataFrame indexé par copy_id : nombre de désaccords, longueur de la
+        plus longue séquence consécutive et sa position de début, trié par
+        longueur décroissante.
     """
     d = add_position(df, ordered_item_ids).sort_values(["copy_id", "position"])
     rows = []
@@ -155,17 +140,15 @@ def longest_disagreement_run(df: pd.DataFrame, ordered_item_ids: list[str]) -> p
 def overconfident_errors(df: pd.DataFrame, seuil_confiance: float = 0.9) -> pd.DataFrame:
     """Prédictions FAUSSES annoncées avec une confiance élevée.
 
-    Ces cas sont les plus dangereux : le modèle se trompe sans le signaler, donc
-    le renvoi humain ne les rattrape pas. Beaucoup de tels cas = confiance
-    inexploitable (cohérent avec un ECE élevé).
+    Cas les plus dangereux : le renvoi humain ne les rattrape pas. En nombre =
+    confiance inexploitable (ECE élevé).
 
     Args:
-        df: prédictions.
-        seuil_confiance: seuil au-dessus duquel la confiance est dite « élevée ».
+        df: prédictions à l'item (colonnes y_true, y_pred, confidence).
+        seuil_confiance: seuil au-delà duquel une erreur est jugée sur-confiante.
 
     Returns:
-        DataFrame des prédictions fausses et sur-confiantes (copy_id, item_id,
-        y_true, y_pred, confidence), triées par confiance décroissante.
+        Les lignes fausses de confiance >= seuil, triées par confiance décroissante.
     """
     faux = df[df["y_true"] != df["y_pred"]]
     surconf = faux[faux["confidence"].fillna(0) >= seuil_confiance]
@@ -175,23 +158,16 @@ def overconfident_errors(df: pd.DataFrame, seuil_confiance: float = 0.9) -> pd.D
 def disagreement_hotspots(
     df: pd.DataFrame, ordered_item_ids: list[str], top: int = 5
 ) -> dict[str, pd.DataFrame]:
-    """Sélectionne des copies-types à inspecter visuellement.
-
-    Renvoie plusieurs « palmarès » complémentaires, chacun éclairant un mécanisme
-    d'erreur différent :
-    - `pire_accord` : copies au plus faible accord global.
-    - `plus_longue_sequence` : copies avec le plus long run de désaccords
-      (suspicion de décalage).
-    - `plus_forte_chute` : copies dont l'accord s'effondre en 2de moitié.
-    - `sur_confiance` : copies cumulant le plus d'erreurs sur-confiantes.
+    """Sélectionne des copies-types à inspecter (un palmarès par mécanisme d'erreur).
 
     Args:
-        df: prédictions.
-        ordered_item_ids: ordre des items.
-        top: nombre de copies par palmarès.
+        df: prédictions à l'item.
+        ordered_item_ids: item_ids dans l'ordre de la dictée.
+        top: nombre de copies retenues par palmarès.
 
     Returns:
-        Dictionnaire de DataFrames (un par palmarès).
+        Un dict de DataFrames, un par mécanisme : `pire_accord`,
+        `plus_longue_sequence`, `plus_forte_chute` et `sur_confiance`.
     """
     d = add_position(df, ordered_item_ids)
 
@@ -227,31 +203,25 @@ def simulate_word_omission_shift(
 ) -> dict[str, float]:
     """Teste l'effet d'un décalage dû à un mot oublié, sur des codes synthétiques.
 
-    Outil pédagogique/de test : on part d'un codage parfait (le modèle reproduit
-    l'expert), puis on simule un modèle qui, à partir de `omission_position`,
-    décale toutes ses prédictions d'un cran (comme s'il n'avait pas vu qu'un mot
-    était absent et avait aligné le mot suivant sur la position courante).
-
-    On mesure l'accord résultant : s'il s'effondre, cela démontre qu'un simple
-    oubli non géré peut détruire l'évaluation de toute la fin de copie.
+    Outil pédagogique : démontre qu'un oubli non géré peut détruire l'évaluation
+    de toute la fin de copie.
 
     Args:
-        expert_codes: codes experts d'une copie (vérité), dans l'ordre.
-        omission_position: index (0-based) où l'élève a omis un mot.
+        expert_codes: codes experts de référence.
+        omission_position: index du mot supposé oublié (déclenche le décalage).
 
     Returns:
-        {"accord_sans_decalage": 1.0, "accord_avec_decalage": x} où x illustre
-        la chute provoquée par le décalage.
+        Un dict : accord sans décalage, accord avec décalage, position de
+        l'omission et nombre d'items situés après l'omission.
     """
     n = len(expert_codes)
-    # Modèle parfait : copie exacte
     parfait = list(expert_codes)
     accord_parfait = sum(a == b for a, b in zip(expert_codes, parfait, strict=True)) / n
 
     # Modèle décalé : à partir de l'omission, tout glisse d'un cran
     decale = list(expert_codes[:omission_position])
-    decale += list(expert_codes[omission_position + 1 :])  # saute la position omise
-    decale += ["1"]  # complète à droite (valeur arbitraire)
+    decale += list(expert_codes[omission_position + 1 :])
+    decale += ["1"]
     decale = decale[:n]
     accord_decale = sum(a == b for a, b in zip(expert_codes, decale, strict=True)) / n
 

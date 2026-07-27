@@ -1,37 +1,25 @@
-"""Scorer en deux étapes (APPROCHE 1) : transcription HTR puis codage textuel.
+"""Scorer en deux étapes (APPROCHE 1) : étape 1 HTR (lecture image), étape 2 codage textuel.
 
-Contraste avec `VLMScorer` (approche 2, end-to-end). Ici on sépare explicitement :
-
-  Étape 1 (HTR) : un modèle multimodal lit l'image et restitue le texte brut
-                  écrit par l'élève, SANS connaître le texte de référence ni le
-                  découpage en items. On mesure ainsi la lecture pour elle-même.
-
-  Étape 2 (codage) : un modèle (éventuellement texte seul, plus léger) reçoit la
-                     transcription de l'étape 1 + le texte de référence, et code
-                     chaque item. Il ne voit pas l'image.
-
-Avantages : la transcription intermédiaire est réutilisable et inspectable ;
-les sources d'erreur (lecture vs jugement) sont découplées.
-Limite : deux étapes = deux sources d'erreur cumulables.
-
-Le scorer respecte la même interface `Scorer` que `VLMScorer`, donc il est évalué
-par exactement le même code de benchmark et de métriques (comparaison équitable).
+Découple lecture et jugement ; même interface `Scorer` que `VLMScorer` pour une comparaison juste.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from typing import cast
 
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from evaluation_dictee.config import ModelConfig, PromptConfig
+from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy, load_image
-from evaluation_dictee.data.reference import GridItem
 from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
 from evaluation_dictee.models.vlm import _image_to_data_url
 from evaluation_dictee.pipeline.alignment import best_realignment, needs_realignment
 from evaluation_dictee.pipeline.prompts import (
+    attach_image,
     build_text_coding_prompt,
     build_transcription_prompt,
 )
@@ -41,19 +29,13 @@ logger = get_logger(__name__)
 
 
 def _extract_items_from_content(content: str) -> list[dict]:
-    """Extrait la liste d'items d'une réponse modèle, de façon robuste.
-
-    Cascade de tentatives, de la plus stricte à la plus permissive :
-    1. JSON complet après nettoyage des ```json``` ;
-    2. Recherche d'un objet racine contenant "items" par regex ;
-    3. Extraction directe de tous les sous-objets à structure d'item
-       (au moins item_id + code) — utile si le JSON global est tronqué.
+    """Extrait la liste d'items d'une réponse modèle, du parsing strict au plus permissif.
 
     Args:
-        content: réponse brute du modèle.
+        content: Contenu textuel brut renvoyé par le modèle.
 
     Returns:
-        La liste d'items trouvée (vide si rien d'exploitable).
+        Liste des items (dictionnaires bruts), vide si rien n'est extractible.
     """
     if not content:
         return []
@@ -94,8 +76,7 @@ def _extract_items_from_content(content: str) -> list[dict]:
             except json.JSONDecodeError:
                 pass
 
-    # Tentative 3 : récupérer TOUS les sous-objets qui ressemblent à un item
-    # (utile si la liste "items" est tronquée mais que les objets sont valides)
+    # Tentative 3 : récupérer les sous-objets d'item isolés (utile si la liste est tronquée).
     items = []
     for match in re.finditer(
         r'\{\s*"item_id"\s*:\s*"[^"]+"[^{}]*"code"\s*:\s*"[^"]+"[^{}]*\}',
@@ -121,17 +102,17 @@ class TwoStageScorer(Scorer):
         scheme: str = "simplifiee",
         model_config_stage2: ModelConfig | None = None,
     ) -> None:
-        """Initialise les clients des deux étapes.
+        """Initialise le client, l'index des items et les configs des deux étapes.
 
         Args:
-            model_config: modèle de l'étape 1 (HTR) — doit être multimodal.
-            prompt_config: stratégie de prompting (ratures...).
-            base_url: URL de l'API (compatible OpenAI).
-            api_key: clé d'API.
-            grid_items: items de la grille (mot attendu, dans l'ordre).
-            scheme: schéma de codage ("simplifiee" ou "complete").
-            model_config_stage2: modèle de l'étape 2 (codage texte). Si None, on
-                réutilise `model_config`. Peut être un modèle texte seul, plus léger.
+            model_config: Configuration du modèle de l'étape 1 (transcription HTR).
+            prompt_config: Configuration du prompt (lecture de l'état final, etc.).
+            base_url: URL de base de l'API compatible OpenAI.
+            api_key: Clé d'API.
+            grid_items: Items de la grille de codage.
+            scheme: Grille de codage utilisée (par défaut « simplifiee »).
+            model_config_stage2: Configuration du modèle de l'étape 2 (codage textuel) ;
+                reprend `model_config` si None.
         """
         self.model_config = model_config
         self.model_config_stage2 = model_config_stage2 or model_config
@@ -143,24 +124,23 @@ class TwoStageScorer(Scorer):
 
     # ── Étape 1 : transcription HTR ──────────────────────────────────────────
     def _transcribe(self, copy: Copy) -> tuple[str, int]:
-        """Lit l'image et renvoie (transcription, nb_tentatives).
+        """Lit l'image et renvoie (transcription, nb_tentatives) ; vide si échec total.
 
-        Réessaie tant que la réponse est vide/non parsable, comme VLMScorer.
+        Args:
+            copy: Copie dont l'image est à transcrire.
 
         Returns:
-            (transcription, n_attempts). Transcription vide si échec total.
+            Couple (transcription, nombre de tentatives) ; transcription vide si aucun
+            essai n'a produit de texte exploitable.
         """
         image = load_image(copy.image_path)
-        prompt = build_transcription_prompt(read_final_state=self.prompt_config.read_final_state)
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": _image_to_data_url(image)}},
-                ],
-            }
-        ]
+        messages = cast(
+            "list[ChatCompletionMessageParam]",
+            attach_image(
+                build_transcription_prompt(read_final_state=self.prompt_config.read_final_state),
+                _image_to_data_url(image),
+            ),
+        )
         for attempt in range(self.model_config.max_retries + 1):
             temp = self.model_config.temperature + (0.3 if attempt > 0 else 0.0)
             response = self.client.chat.completions.create(
@@ -177,30 +157,46 @@ class TwoStageScorer(Scorer):
 
     @staticmethod
     def _parse_transcription(content: str) -> str:
-        """Extrait le champ 'transcription' du JSON renvoyé à l'étape 1."""
+        """Extrait le champ 'transcription' du JSON renvoyé à l'étape 1.
+
+        Args:
+            content: Contenu textuel brut renvoyé par le modèle.
+
+        Returns:
+            Transcription extraite ; repli sur le texte brut si le JSON est illisible.
+        """
         try:
             cleaned = content.strip().removeprefix("```json").removeprefix("```")
             cleaned = cleaned.removesuffix("```").strip()
             data = json.loads(cleaned)
             return str(data.get("transcription", "")).strip()
         except (json.JSONDecodeError, KeyError, TypeError):
-            # Repli : si le modèle a répondu en texte brut, on le prend tel quel.
+            # Repli : réponse en texte brut prise telle quelle.
             return content.strip()
 
     # ── Étape 2 : codage du texte transcrit ──────────────────────────────────
     def _code_text(self, copy: Copy, reference_text: str, transcription: str) -> CopyPrediction:
         """Code chaque item à partir de la transcription (sans image).
 
-        Réessaie tant que le JSON de réponse est vide ou non parsable, comme
-        l'étape 1. Sans ce retry, un échec ponctuel de génération JSON (préambule
-        parasite, troncature) codait toute la copie en '?' silencieusement.
+        Le retry évite qu'un échec ponctuel de génération JSON code toute la copie en '?'.
+
+        Args:
+            copy: Copie évaluée (fournit la liste d'items à coder).
+            reference_text: Texte de référence de la dictée.
+            transcription: Transcription produite à l'étape 1.
+
+        Returns:
+            Prédiction de la copie ; items codés « ? » si aucun essai n'est exploitable.
         """
         items_a_coder = [self._items_by_id[i] for i in copy.item_ids if i in self._items_by_id]
-        prompt = build_text_coding_prompt(
-            reference_text=reference_text,
-            transcription=transcription,
-            items=items_a_coder,
-            scheme=self.scheme,
+        messages = cast(
+            "list[ChatCompletionMessageParam]",
+            build_text_coding_prompt(
+                reference_text=reference_text,
+                transcription=transcription,
+                items=items_a_coder,
+                scheme=self.scheme,
+            ),
         )
         for attempt in range(self.model_config_stage2.max_retries + 1):
             temp = self.model_config_stage2.temperature + (0.3 if attempt > 0 else 0.0)
@@ -208,10 +204,9 @@ class TwoStageScorer(Scorer):
                 model=self.model_config_stage2.name,
                 temperature=temp,
                 max_tokens=self.model_config_stage2.max_tokens,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
             )
             content = response.choices[0].message.content or ""
-            # On regarde d'abord si le JSON est extractible avant de le parser.
             if _extract_items_from_content(content):
                 return self._parse_coding(copy, content)
             logger.warning(
@@ -220,25 +215,21 @@ class TwoStageScorer(Scorer):
                 self.model_config_stage2.max_retries + 1,
                 copy.copy_id,
             )
-        # Tous les essais ont échoué : on parse quand même (produira des '?')
-        # pour laisser _parse_coding logger et remonter proprement.
+        # Échec total : on parse quand même pour laisser _parse_coding logger et remonter des '?'.
         return self._parse_coding(copy, content)
 
     def _parse_coding(self, copy: Copy, content: str) -> CopyPrediction:
-        """Parse le JSON de codage de l'étape 2 (mêmes garanties que VLMScorer).
+        """Parse le JSON de codage de l'étape 2, avec ré-alignement de sécurité (cf. VLMScorer).
 
-        Extraction JSON robuste : gère les préambules textuels, blocs ```json,
-        et tente une recherche par regex si le parsing direct échoue (utile
-        quand le modèle ajoute du texte avant/après le JSON).
+        Args:
+            copy: Copie évaluée (fournit la liste d'items attendus).
+            content: Contenu textuel brut renvoyé par le modèle à l'étape 2.
 
-        Applique le ré-alignement de sécurité si la transcription par item révèle
-        un décalage. Réutilise exactement la logique d'alignement de l'approche 2,
-        ce qui garde les deux approches comparables.
+        Returns:
+            Prédiction de la copie ; items codés « ? » pour ceux absents de la réponse.
         """
         raw_items = _extract_items_from_content(content)
         if not raw_items:
-            # Échec total du parsing : le modèle n'a pas rendu de JSON exploitable.
-            # On loggue explicitement pour que le silence ne masque plus le problème.
             logger.warning(
                 "Étape 2 (codage textuel) : aucun item extractible du JSON pour la "
                 "copie %s. Réponse tronquée ou format cassé (longueur brute : %d). "
@@ -289,20 +280,20 @@ class TwoStageScorer(Scorer):
 
     # ── Interface Scorer ─────────────────────────────────────────────────────
     def score_copy(self, copy: Copy, reference_text: str | None) -> CopyPrediction:
-        """Évalue une copie en enchaînant transcription puis codage.
+        """Évalue une copie : transcription puis codage (non transcrite si l'étape 1 échoue).
 
         Args:
-            copy: copie à évaluer.
-            reference_text: texte de référence de la dictée.
+            copy: Copie à évaluer.
+            reference_text: Texte de référence de la dictée, ou None.
 
         Returns:
-            Prédictions par item. Si l'étape 1 ne produit aucune transcription,
-            la copie est marquée non transcrite (exclue des métriques).
+            Prédiction de la copie ; `transcribed=False` si l'étape 1 (HTR) n'a produit
+            aucune transcription. La transcription brute est conservée dans
+            `raw_transcription`.
         """
         transcription, n_attempts = self._transcribe(copy)
 
         if not transcription.strip():
-            # Échec de lecture : aucune transcription exploitable.
             items_vides = [
                 ItemPrediction(item_id=i, code="?", confidence=0.0) for i in copy.item_ids
             ]

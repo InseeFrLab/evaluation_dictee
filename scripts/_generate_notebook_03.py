@@ -1,14 +1,4 @@
-"""Regénère notebooks/03_analyse_resultats.ipynb — version consolidée.
-
-Intègre les évolutions récentes :
-- IC analytiques (Wilson + delta method pour le kappa)
-- Prévalence par item corrigée du design effect de Kish
-- Distributions à 3 panneaux (total / fautes / absents) + courbe de survie
-- Métriques accord/kappa/rappel/précision par niveau de difficulté
-- Comparaison multi-modèles pour construire un score de confiance
-- Stratégie de renvoi basée sur le désaccord multi-modèles (avec IC)
-- Export HTML sélectif pour la DEPP
-"""
+"""Regénère notebooks/03_analyse_resultats.ipynb (analyse consolidée du benchmark)."""
 # ruff: noqa: E501
 
 from __future__ import annotations
@@ -65,7 +55,7 @@ CELLS.append(
         "from scipy import stats as scistats\n"
         "from scipy.stats import norm as scinorm\n"
         "from sklearn.metrics import cohen_kappa_score\n\n"
-        "from evaluation_dictee.data.reference import load_grid\n"
+        "from evaluation_dictee.data.grid import load_grid\n"
         "from evaluation_dictee.evaluation.report import (\n"
         "    disagreement_decomposition, load_predictions,\n"
         "    per_copy_metrics, per_item_metrics,\n"

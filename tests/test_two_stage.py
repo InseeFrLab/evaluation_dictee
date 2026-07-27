@@ -4,8 +4,8 @@ import json
 from types import SimpleNamespace
 
 from evaluation_dictee.config import ModelConfig, PromptConfig
+from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy
-from evaluation_dictee.data.reference import GridItem
 from evaluation_dictee.models.two_stage import TwoStageScorer
 
 ITEMS = [
@@ -89,11 +89,13 @@ def test_deux_appels_distincts(monkeypatch) -> None:
     scorer = _make_scorer([transcription, codage], monkeypatch)
     scorer.score_copy(_copy(), "Le soir tombait")
     assert len(scorer.client.appels) == 2
-    # 1er appel = multimodal (contenu = liste avec image)
-    contenu1 = scorer.client.appels[0]["messages"][0]["content"]
+    # Chaque prompt est désormais structuré system + user ; l'image (ou le texte)
+    # est portée par le message user, c.-à-d. le dernier message.
+    # 1er appel = multimodal : le contenu du message user est une liste (avec image).
+    contenu1 = scorer.client.appels[0]["messages"][-1]["content"]
     assert isinstance(contenu1, list)
-    # 2e appel = texte seul (contenu = chaîne)
-    contenu2 = scorer.client.appels[1]["messages"][0]["content"]
+    # 2e appel = texte seul : le contenu du message user est une chaîne.
+    contenu2 = scorer.client.appels[1]["messages"][-1]["content"]
     assert isinstance(contenu2, str)
 
 

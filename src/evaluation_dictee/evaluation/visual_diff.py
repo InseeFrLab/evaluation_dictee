@@ -1,19 +1,7 @@
-"""Génère une mini-interface HTML de comparaison visuelle pour le diagnostic.
+"""HTML autonome (image base64) comparant, par copie, codage expert et codage modèle.
 
-Pour une copie donnée, l'interface affiche côte à côte :
-  1. l'image numérisée de l'élève (encodée dans le HTML, autonome) ;
-  2. le codage de l'annotateur expert (mot par mot, coloré) ;
-  3. la transcription par le modèle (si disponible) ;
-  4. le codage par le modèle (mot par mot, coloré) ;
-avec mise en évidence des items où modèle et expert divergent.
-
-Le fichier HTML produit est autonome (image en base64) : il s'ouvre directement
-dans un navigateur, sans serveur. Idéal pour inspecter les copies-types
-identifiées par le module diagnostics.
-
-ATTENTION DONNÉES SENSIBLES : le HTML contient l'image d'une copie d'élève.
-Le générer uniquement dans l'environnement sécurisé (SSP Cloud), ne jamais le
-committer ni le sortir de l'environnement.
+DONNÉES SENSIBLES : le HTML contient l'image d'une copie d'élève. À générer
+uniquement sur le SSP Cloud, à ne jamais committer ni sortir de l'environnement.
 """
 
 from __future__ import annotations
@@ -26,10 +14,9 @@ from pathlib import Path
 import pandas as pd
 from PIL import Image
 
+from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import load_image
-from evaluation_dictee.data.reference import GridItem
 
-# Couleurs par code (fond) — lisibles et cohérentes entre les deux codages
 _COULEUR_CODE = {
     "1": "#d7f0d7",  # correct → vert clair
     "9": "#f7d4d4",  # erreur → rouge clair
@@ -39,7 +26,15 @@ _COULEUR_CODE = {
 
 
 def _img_base64(path: str, max_width: int = 1100) -> str:
-    """Charge l'image, la redimensionne si besoin, renvoie une data URL PNG."""
+    """Charge l'image, la redimensionne si besoin, renvoie une data URL PNG.
+
+    Args:
+        path: chemin de l'image de la copie.
+        max_width: largeur maximale ; l'image est réduite au-delà (ratio conservé).
+
+    Returns:
+        Une data URL `data:image/png;base64,...` prête à inliner dans le HTML.
+    """
     img: Image.Image = load_image(path)
     if img.width > max_width:
         ratio = max_width / img.width
@@ -58,8 +53,15 @@ def _chip(
 ) -> str:
     """Rend une « puce » HTML pour un item : mot attendu + code, colorée.
 
-    Affiche également la transcription (« lu : … ») quand elle diffère du mot
-    attendu, et le raisonnement chain-of-thought (« → … ») quand il est fourni.
+    Args:
+        mot: mot attendu (texte de référence de l'item).
+        code: code attribué, qui détermine la couleur de fond.
+        transcription: lecture du modèle, affichée si elle diffère du mot attendu.
+        comparaison: commentaire du modèle, affiché s'il n'est pas « identique ».
+        divergent: si True, bordure rouge signalant un désaccord expert/modèle.
+
+    Returns:
+        Le fragment HTML de la puce.
     """
     bg = _COULEUR_CODE.get(code, "#ffffff")
     bord = "2px solid #b00020" if divergent else "1px solid #ccc"
@@ -93,20 +95,19 @@ def build_copy_comparison(
 
     Args:
         copy_id: identifiant de la copie.
-        image_path: chemin de l'image (local ou s3://).
-        grid_items: items de la grille dans l'ordre (mot attendu).
-        expert_codes: {item_id: code_expert}.
-        model_preds: {item_id: {"code": ..., "transcription": ..., "confidence": ...}}.
-        raw_transcription: transcription brute de l'étape 1 (approche two_stage).
-            Si fournie, elle est affichée telle quelle ; sinon la transcription est
-            reconstituée en recollant les transcriptions par item (approche end_to_end).
+        image_path: chemin de l'image numérisée de la copie.
+        grid_items: items de la grille (mot attendu et item_id), dans l'ordre.
+        expert_codes: code expert par item_id.
+        model_preds: par item_id, dict {code, transcription, comparaison, ...}.
+        raw_transcription: transcription brute de l'étape 1 (HTR), prioritaire
+            si fournie sur la reconstitution par item.
 
     Returns:
-        Un fragment HTML pour cette copie.
+        Le fragment HTML `<section>` de la copie (image, transcription, codages
+        expert et modèle, badge d'accord).
     """
     img_data = _img_base64(image_path)
 
-    # Statistiques rapides de la copie
     n = len(grid_items)
     n_div = sum(
         1
@@ -115,7 +116,6 @@ def build_copy_comparison(
     )
     accord = (n - n_div) / n if n else 0.0
 
-    # Reconstruire la « phrase » expert et modèle, colorée
     chips_expert, chips_modele = [], []
     transcription_libre = []
     for it in grid_items:
@@ -138,8 +138,8 @@ def build_copy_comparison(
         if mtrans:
             transcription_libre.append(mtrans)
 
-    # Priorité à la transcription brute de l'étape 1 (approche two_stage), qui est
-    # la VRAIE lecture du modèle. À défaut, on recolle les transcriptions par item.
+    # Priorité à la transcription brute de l'étape 1 (VRAIE lecture du modèle) ;
+    # à défaut on recolle les transcriptions par item.
     if raw_transcription and raw_transcription.strip():
         transcription_txt = html.escape(raw_transcription.strip())
         source_trans = "étape 1 (HTR)"
@@ -204,11 +204,11 @@ def build_html_report(
     """Assemble la page HTML complète à partir de fragments de copies.
 
     Args:
-        copies_html: fragments HTML (un par copie, via build_copy_comparison).
-        title: titre de la page.
+        copies_html: fragments HTML de copies (issus de `build_copy_comparison`).
+        title: titre de la page (aussi utilisé dans l'en-tête).
 
     Returns:
-        Le document HTML complet.
+        Le document HTML complet et autonome (CSS et légende inclus).
     """
     legende = (
         "<p class='legende'>Légende des codes : "
@@ -241,22 +241,18 @@ def generate_comparison_report(
     """Génère le rapport HTML de comparaison pour une liste de copies.
 
     Args:
-        copy_ids: copies à inclure (typiquement les copies-types du diagnostic).
-        predictions_df: prédictions (copy_id, item_id, y_pred, confidence,
-            et éventuellement transcription si conservée).
-        grid_items: items de la grille dans l'ordre.
-        images_dir: dossier des images (local ou s3://).
-        expert_labels: {copy_id: {item_id: code_expert}} (issu de load_labels).
-            Les codes bruts (3/4/5) sont normalisés automatiquement selon `scheme`.
+        copy_ids: copies à inclure dans le rapport.
+        predictions_df: prédictions à l'item (codes, transcription, comparaison…).
+        grid_items: items de la grille de la dictée, dans l'ordre.
+        images_dir: dossier des images ; le chemin est `images_dir/<copy_id>`.
+        expert_labels: codes experts bruts par copie, puis par item_id.
         output_path: chemin du fichier HTML à écrire.
-        scheme: schéma de codage ("simplifiee" ou "complete"). Utilisé pour
-            normaliser les codes experts bruts du CSV afin qu'ils correspondent
-            au jeu de modalités affiché dans le HTML et utilisé par le modèle.
+        scheme: schéma de codage pour normaliser les codes experts (ex. « simplifiee »).
 
     Returns:
-        Le chemin du fichier HTML produit.
+        Le chemin du fichier HTML écrit.
     """
-    from evaluation_dictee.data.grid import normalize as _normalize
+    from evaluation_dictee.data.reference import normalize as _normalize
 
     has_trans = "transcription" in predictions_df.columns
     has_comp = "comparaison" in predictions_df.columns
@@ -273,7 +269,7 @@ def generate_comparison_report(
             }
             for _, r in sub.iterrows()
         }
-        # Transcription brute de l'étape 1 (identique sur toutes les lignes de la copie)
+        # Transcription brute étape 1 : identique sur toutes les lignes de la copie
         raw_trans = None
         if has_raw and len(sub):
             vals = sub["raw_transcription"].dropna()
@@ -310,16 +306,16 @@ def report_worst_copies(
     """Génère le HTML diagnostic des N copies au plus fort taux de désaccord.
 
     Args:
-        predictions_df: prédictions (copy_id, item_id, y_pred, confidence, transcription).
-        grid_items: items de la grille dans l'ordre.
-        images_dir: dossier des images (local ou s3://).
-        expert_labels: {copy_id: {item_id: code_expert}} (issu de load_labels).
+        predictions_df: prédictions à l'item.
+        grid_items: items de la grille de la dictée, dans l'ordre.
+        images_dir: dossier des images.
+        expert_labels: codes experts bruts par copie, puis par item_id.
         output_path: chemin du fichier HTML à écrire.
         n: nombre de copies (les pires) à inclure.
         scheme: schéma de codage pour normaliser les codes experts.
 
     Returns:
-        Le chemin du fichier HTML produit.
+        Le chemin du fichier HTML écrit.
     """
     from evaluation_dictee.evaluation.report import copies_by_disagreement
 
@@ -347,23 +343,20 @@ def report_single_copy(
 ) -> Path:
     """Génère le HTML diagnostic d'UNE copie identifiée par son copy_id.
 
-    Permet à l'utilisateur d'inspecter une copie précise (image + transcription +
-    codage expert + codage modèle + désaccords surlignés).
-
     Args:
-        copy_id: identifiant de la copie à afficher (ex. "dictee_2015_0042.png").
-        predictions_df: prédictions.
-        grid_items: items de la grille dans l'ordre.
-        images_dir: dossier des images (local ou s3://).
-        expert_labels: {copy_id: {item_id: code_expert}}.
+        copy_id: identifiant de la copie à diagnostiquer.
+        predictions_df: prédictions à l'item.
+        grid_items: items de la grille de la dictée, dans l'ordre.
+        images_dir: dossier des images.
+        expert_labels: codes experts bruts par copie, puis par item_id.
         output_path: chemin du fichier HTML à écrire.
         scheme: schéma de codage pour normaliser les codes experts.
 
     Returns:
-        Le chemin du fichier HTML produit.
+        Le chemin du fichier HTML écrit.
 
     Raises:
-        ValueError: si la copie n'est pas présente dans les prédictions.
+        ValueError: si le copy_id est absent des prédictions.
     """
     if copy_id not in set(predictions_df["copy_id"]):
         dispo = sorted(set(predictions_df["copy_id"]))[:5]

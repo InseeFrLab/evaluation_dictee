@@ -1,8 +1,8 @@
-"""Tests de la logique de grille (simplification des codes)."""
+"""Tests de la logique des codes de la dictée (simplification 6 codes → 1/9/0)."""
 
 import pytest
 
-from evaluation_dictee.data import grid
+from evaluation_dictee.data import reference
 
 
 @pytest.mark.parametrize(
@@ -18,12 +18,12 @@ from evaluation_dictee.data import grid
     ],
 )
 def test_to_simplified(code_complet: str, attendu: str) -> None:
-    assert grid.to_simplified(code_complet) == attendu
+    assert reference.to_simplified(code_complet) == attendu
 
 
 def test_normalize_complete_garde_le_code() -> None:
-    assert grid.normalize("4", "complete") == "4"
+    assert reference.normalize("4", "complete") == "4"
 
 
 def test_normalize_simplifiee_regroupe() -> None:
-    assert grid.normalize("4", "simplifiee") == "9"
+    assert reference.normalize("4", "simplifiee") == "9"

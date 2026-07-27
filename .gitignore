@@ -11,6 +11,11 @@
 # Exceptions : on autorise les images de documentation
 !docs/**/*.png
 
+# ─── MLflow (suivi local, ne pas versionner) ───────────────────
+mlflow.db
+mlruns/
+mlartifacts/
+
 # ─── Secrets ────────────────────────────────────────────────────
 .env
 *.key
@@ -45,3 +50,13 @@ mlartifacts/
 
 # ─── Notebooks (sorties) ────────────────────────────────────────
 *.ipynb_checkpoints/
+
+# ─── Quarto (site généré) ───────────────────────────────────────
+website/_site/
+website/.quarto/
+.quarto/
+# Cache d'exécution : contient les résultats calculés (métriques lues sur S3).
+# On ne le versionne pas → le rendu réexécute et relit les prédictions depuis S3.
+website/_freeze/
+/.quarto/
+**/*.quarto_ipynb

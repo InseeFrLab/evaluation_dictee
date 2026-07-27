@@ -38,7 +38,6 @@ def test_json_tronque_recupere_items_valides() -> None:
         '{"item_id": "i3", "cod'  # tronqué
     )
     items = _extract_items_from_content(contenu)
-    # On récupère au moins les 2 items complets
     assert len(items) >= 2
     assert items[0]["item_id"] == "i1"
 

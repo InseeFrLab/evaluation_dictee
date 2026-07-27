@@ -1,24 +1,9 @@
-"""Fine-tune un VLM gemma4 pour la transcription (HTR) sur Scoledit tous niveaux.
+"""Fine-tune un VLM gemma4 (QLoRA) pour la transcription HTR sur Scoledit tous niveaux.
 
-Objectif : améliorer la fidélité de lecture du modèle sur l'écriture manuscrite
-d'enfants du CP au CM2, en fine-tunant avec QLoRA (LoRA en 4-bit).
-
-Corpus : Scoledit CP, CE1, CE2, CM1, CM2 (scans + transcriptions humaines TEI).
-Le modèle apprend à reproduire fidèlement le texte de l'élève, FAUTES COMPRISES —
-c'est la lecture qu'on entraîne, pas la correction orthographique.
-
-Sortie : un adaptateur LoRA (~50-200 Mo) qui se charge par-dessus le modèle de
-base à l'inférence. Le fichier de configuration YAML pilote tous les
-hyperparamètres pour la reproductibilité.
-
-Prérequis (à installer sur le service GPU Onyxia) :
-    pip install unsloth trl peft transformers bitsandbytes accelerate
+Nécessite une H100/A100 80 Go du SSP Cloud, avec au préalable :
+    uv pip install unsloth trl peft transformers bitsandbytes accelerate
                 datasets pillow s3fs pyyaml pydantic mlflow
-
-Usage :
-    python scripts/finetune_htr_scoledit.py --config configs/finetune_htr_gemma4.yaml
-
-Ce script s'exécute sur une H100/A100 80 Go du SSP Cloud. Ne pas lancer sans GPU.
+Usage : uv run scripts/finetune_htr_scoledit.py --config configs/finetune/finetune_REFERENCE.yaml
 """
 
 from __future__ import annotations
@@ -50,18 +35,13 @@ logger = get_logger(__name__)
 class DataConfig(BaseModel):
     """Localisation des données Scoledit multi-niveaux et split train/val/test."""
 
-    # Racine des scans (contient les sous-dossiers CP, CE1, CE2, CM1, CM2).
     scans_root: str = "s3://projet-production-ecrits-depp/scoledit/scans"
-    # Racine des annotations (idem).
     annotations_root: str = "s3://projet-production-ecrits-depp/scoledit/annotation"
-    # Niveaux à inclure dans l'entraînement.
     levels: list[str] = Field(default_factory=lambda: ["CP", "CE1", "CE2", "CM1", "CM2"])
-    # Répartition des splits : 70 % train, 15 % val, 15 % test.
     train_ratio: float = 0.70
     val_ratio: float = 0.15
-    # Le reste va dans le test set (jamais vu pendant l'entraînement).
+    # Le reste (15 %) va dans le test set, jamais vu pendant l'entraînement.
     seed: int = 42
-    # Limiter le nombre total d'échantillons (utile pour un test rapide).
     limit: int | None = None
 
 
@@ -104,20 +84,18 @@ class FinetuneConfig(BaseModel):
     """Configuration complète du fine-tuning."""
 
     name: str = Field(..., description="Nom unique du run (MLflow + dossier).")
-    # Modèle de base à fine-tuner (identifiant HuggingFace).
-    base_model: str = "unsloth/gemma-4-27b-it"
+    base_model: str = "unsloth/gemma-4-27b-it"  # identifiant HuggingFace
     # Chargement en 4-bit (QLoRA) : ~20 Go VRAM au lieu de 60.
     load_in_4bit: bool = True
     data: DataConfig = Field(default_factory=DataConfig)
     lora: LoraConfig = Field(default_factory=LoraConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
-    # Prompt fixe utilisé pour transcrire (identique à celui d'inférence !).
-    # Point crucial : le prompt d'entraînement et d'inférence DOIVENT matcher.
+    # Le prompt d'entraînement et d'inférence DOIVENT être identiques.
     read_final_state: bool = True
 
 
-# Résolution des annotations forward-declared (nécessaire avec
-# `from __future__ import annotations` + Pydantic + Literal).
+# Résolution des annotations forward-declared, nécessaire avec
+# `from __future__ import annotations` + Pydantic + Literal.
 TrainingConfig.model_rebuild()
 FinetuneConfig.model_rebuild()
 
@@ -135,7 +113,7 @@ def load_finetune_config(path: str | Path) -> FinetuneConfig:
 
 @dataclass
 class DatasetSplit:
-    """Contient les trois splits train/val/test."""
+    """Les trois splits train/val/test."""
 
     train: list[ScoledtSample]
     val: list[ScoledtSample]
@@ -152,14 +130,7 @@ def _list_annotations(fs, annotations_dir: str) -> list[str]:
 
 
 def load_scoledit_all_levels(cfg: DataConfig) -> list[ScoledtSample]:
-    """Charge les échantillons Scoledit pour tous les niveaux configurés.
-
-    Args:
-        cfg: config des données (chemins, niveaux, limite).
-
-    Returns:
-        Liste unifiée d'échantillons (avec le niveau conservé pour la stratification).
-    """
+    """Charge les échantillons Scoledit pour tous les niveaux configurés."""
     samples: list[ScoledtSample] = []
     fs, _ = fsspec.core.url_to_fs(cfg.annotations_root)
     for level in cfg.levels:
@@ -192,11 +163,10 @@ def load_scoledit_all_levels(cfg: DataConfig) -> list[ScoledtSample]:
 
 
 def stratified_split(samples: list[ScoledtSample], cfg: DataConfig) -> DatasetSplit:
-    """Split train/val/test STRATIFIÉ par niveau scolaire.
+    """Split train/val/test stratifié par niveau scolaire.
 
-    Assure que chaque niveau (CP, CE1, ..., CM2) soit représenté dans les trois
-    splits selon les mêmes proportions. Sans stratification, un niveau minoritaire
-    pourrait n'apparaître que dans le train, biaisant l'évaluation.
+    Sans stratification, un niveau minoritaire pourrait n'apparaître que dans le
+    train, biaisant l'évaluation.
     """
     rng = random.Random(cfg.seed)
     by_level: dict[str, list[ScoledtSample]] = {}
@@ -220,7 +190,7 @@ def stratified_split(samples: list[ScoledtSample], cfg: DataConfig) -> DatasetSp
             n - n_train - n_val,
             n,
         )
-    rng.shuffle(train)  # mélanger les niveaux
+    rng.shuffle(train)  # mélanger les niveaux entre eux
     rng.shuffle(val)
     return DatasetSplit(train=train, val=val, test=test)
 
@@ -248,25 +218,13 @@ def _load_image_from_s3_or_local(path: str) -> Image.Image:
     with fsspec.open(path, "rb") as f:
         data = f.read()
     img = Image.open(io.BytesIO(data))
-    # Convertir en RGB (les VLM attendent 3 canaux ; les JPEG le sont déjà)
-    if img.mode != "RGB":
+    if img.mode != "RGB":  # les VLM attendent 3 canaux
         img = img.convert("RGB")
     return img
 
 
 def sample_to_conversation(s: ScoledtSample) -> dict:
-    """Convertit un échantillon Scoledit en conversation multimodale.
-
-    Format compatible SFTTrainer (Unsloth / TRL) : image + prompt utilisateur,
-    puis réponse assistant contenant le JSON de transcription. Le modèle
-    apprend à imiter la réponse assistant.
-
-    Args:
-        s: échantillon Scoledit (image + référence humaine).
-
-    Returns:
-        Dict au format {"messages": [...]} attendu par le trainer.
-    """
+    """Convertit un échantillon Scoledit en conversation multimodale (format SFTTrainer)."""
     reponse_attendue = json.dumps({"transcription": s.reference}, ensure_ascii=False)
     return {
         "messages": [
@@ -295,11 +253,7 @@ def build_hf_dataset(samples: list[ScoledtSample]):
 
 
 def run_finetuning(cfg: FinetuneConfig) -> None:
-    """Enchaîne : chargement modèle, données, entraînement, sauvegarde adapteur.
-
-    Args:
-        cfg: configuration validée du fine-tuning.
-    """
+    """Enchaîne : chargement modèle, données, entraînement, sauvegarde adapteur."""
     # Imports paresseux : ces libs sont lourdes et pas installées côté CPU
     from trl import SFTConfig, SFTTrainer
     from unsloth import FastVisionModel

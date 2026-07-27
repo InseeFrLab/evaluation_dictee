@@ -1,89 +1,55 @@
-"""Définition de la grille de codage de la dictée et logique de simplification.
+"""Chargement de la grille de codage de la dictée (JSON versionné dans configs/).
 
-Voir CLAUDE.md §3. La grille complète distingue 6 codes ; la grille simplifiée
-(cible principale du projet) regroupe les erreurs de mots en un seul code.
+Le texte de référence est désormais dérivé de la grille.
 """
 
 from __future__ import annotations
 
-# Codes de la grille complète
-CODE_CORRECT = "1"
-CODE_ERR_LEXICALE = "3"
-CODE_ERR_GRAMMATICALE = "4"
-CODE_ERR_LES_DEUX = "5"
-CODE_ERR_PONCT = "9"  # documenté pour la ponctuation (et observé sur des mots)
-CODE_ABSENT = "0"
-
-# Codes de la grille simplifiée
-SIMPLE_CORRECT = "1"
-SIMPLE_ERREUR = "9"  # toute erreur, quel qu'en soit le type
-SIMPLE_ABSENT = "0"
-
-# Ensemble des codes considérés comme « une erreur » (hors absent/correct)
-_CODES_ERREUR = {CODE_ERR_LEXICALE, CODE_ERR_GRAMMATICALE, CODE_ERR_LES_DEUX, CODE_ERR_PONCT}
-
-# Alphabet de codes attendu pour chaque schéma (après normalisation).
-# Sert de référence pour vérifier que modèle et experts codent dans le même jeu.
-ALLOWED_CODES = {
-    "simplifiee": {SIMPLE_CORRECT, SIMPLE_ERREUR, SIMPLE_ABSENT},  # {1, 9, 0}
-    "complete": {
-        CODE_CORRECT,
-        CODE_ERR_LEXICALE,
-        CODE_ERR_GRAMMATICALE,
-        CODE_ERR_LES_DEUX,
-        CODE_ERR_PONCT,
-        CODE_ABSENT,  # {1,3,4,5,9,0}
-    },
-}
+import json
+from dataclasses import dataclass
 
 
-def allowed_codes(scheme: str) -> set[str]:
-    """Renvoie l'ensemble des codes valides après normalisation pour un schéma.
+@dataclass
+class GridItem:
+    """Un item de la grille : mot attendu, type et fautes connues."""
+
+    item_id: str
+    attendu: str
+    type: str  # "mot" ou "ponctuation"
+    ex_lexicale: list[str]
+    ex_grammaticale: list[str]
+    ex_les_deux: list[str]
+
+
+@dataclass
+class DictationGrid:
+    """Grille complète de la dictée."""
+
+    reference_text: str
+    items: list[GridItem]
+
+
+def load_grid(path: str) -> DictationGrid:
+    """Charge la grille de codage depuis un fichier JSON.
 
     Args:
-        scheme: "simplifiee" ou "complete".
+        path: Chemin du fichier JSON de la grille.
 
     Returns:
-        L'ensemble des codes attendus (ex. {"1", "9", "0"} pour simplifiee).
-
-    Raises:
-        ValueError: si le schéma est inconnu.
+        La grille désérialisée : texte de référence et liste des items.
     """
-    if scheme not in ALLOWED_CODES:
-        raise ValueError(f"Schéma inconnu : {scheme!r}. Attendu : {set(ALLOWED_CODES)}.")
-    return ALLOWED_CODES[scheme]
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
 
-
-def to_simplified(code: str) -> str:
-    """Convertit un code de la grille complète vers la grille simplifiée 1/9/0.
-
-    Args:
-        code: code de la grille complète ("1", "3", "4", "5", "9" ou "0").
-
-    Returns:
-        "1" (correct), "9" (erreur quelconque) ou "0" (absent).
-    """
-    code = code.strip()
-    if code == CODE_ABSENT:
-        return SIMPLE_ABSENT
-    if code == CODE_CORRECT:
-        return SIMPLE_CORRECT
-    if code in _CODES_ERREUR:
-        return SIMPLE_ERREUR
-    # Code inattendu : on le renvoie tel quel pour qu'il soit visible dans l'analyse
-    return code
-
-
-def normalize(code: str, scheme: str) -> str:
-    """Normalise un code selon le schéma cible.
-
-    Args:
-        code: code brut.
-        scheme: "simplifiee" ou "complete".
-
-    Returns:
-        Le code normalisé.
-    """
-    if scheme == "simplifiee":
-        return to_simplified(code)
-    return code.strip()
+    items = [
+        GridItem(
+            item_id=it["id"],
+            attendu=it["attendu"],
+            type=it["type"],
+            ex_lexicale=it.get("ex_lexicale", []),
+            ex_grammaticale=it.get("ex_grammaticale", []),
+            ex_les_deux=it.get("ex_les_deux", []),
+        )
+        for it in raw["items"]
+    ]
+    return DictationGrid(reference_text=raw["reference_text"], items=items)

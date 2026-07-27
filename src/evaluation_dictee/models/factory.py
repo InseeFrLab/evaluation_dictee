@@ -1,13 +1,9 @@
-"""Fabrique de scorer : choisit l'approche selon la configuration.
-
-Centralise la construction du bon `Scorer` (approche 1 ou 2) pour que le script
-CLI et les notebooks n'aient pas à dupliquer cette logique.
-"""
+"""Fabrique de scorer : construit le bon `Scorer` (approche 1 ou 2) selon la configuration."""
 
 from __future__ import annotations
 
 from evaluation_dictee.config import ExperimentConfig
-from evaluation_dictee.data.reference import GridItem
+from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.models.base import Scorer
 from evaluation_dictee.models.two_stage import TwoStageScorer
 from evaluation_dictee.models.vlm import VLMScorer
@@ -22,13 +18,13 @@ def build_scorer(
     """Construit le scorer correspondant à l'approche déclarée dans la config.
 
     Args:
-        config: configuration de l'expérience (contient `approach`).
-        grid_items: items de la grille (mot attendu).
-        base_url: URL de l'API.
-        api_key: clé d'API.
+        config: Configuration de l'expérience (dont `approach`, `model`, `prompt`, `grid`).
+        grid_items: Items de la grille de codage.
+        base_url: URL de base de l'API compatible OpenAI.
+        api_key: Clé d'API.
 
     Returns:
-        Un VLMScorer (approche end_to_end) ou un TwoStageScorer (approche two_stage).
+        Un `TwoStageScorer` si `approach == "two_stage"`, sinon un `VLMScorer`.
     """
     if config.approach == "two_stage":
         return TwoStageScorer(

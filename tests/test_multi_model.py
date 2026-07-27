@@ -121,7 +121,6 @@ def test_referral_curve_monotonicity(multi_runs_data) -> None:
     conf = confidence_score(agree)
     curve = referral_curve_multi(agree, conf, reference_run="run1")
 
-    # Le % renvoyé doit être monotone croissant en τ
     pct = curve["pct_copies_renvoyees"].values
     assert all(pct[i] <= pct[i + 1] for i in range(len(pct) - 1)), f"Non monotone : {pct}"
 
@@ -132,9 +131,7 @@ def test_disagreement_type_summary(multi_runs_data) -> None:
     agree = agreement_per_item(df)
     summary = disagreement_type_summary(agree)
 
-    # Il doit y avoir des lignes pour n_accord_modeles = 2 ou 3
     assert set(summary.index).issubset({1, 2, 3})
-    # Somme des % = 100
     assert abs(summary["pct_items"].sum() - 100.0) < 1e-6
 
 

@@ -1,12 +1,7 @@
 """Chargement des imagettes et des labels experts (local ou S3).
 
-Points d'attention :
-- Les fichiers fournis par la DEPP sont des TIFF bi-level 1 bit (extension
-  trompeuse ".png"). On les normalise systématiquement en niveaux de gris.
-- Les chemins peuvent être locaux OU sur S3 (préfixe "s3://"). L'accès S3 passe
-  par fsspec/s3fs, qui lit les identifiants depuis les variables d'environnement
-  (AWS_ACCESS_KEY_ID, etc., voir .env). Sur le SSP Cloud, ces variables sont déjà
-  injectées par Onyxia.
+Les fichiers DEPP sont des TIFF 1 bit à extension trompeuse ".png" : on les
+normalise systématiquement en niveaux de gris.
 """
 
 from __future__ import annotations
@@ -16,19 +11,13 @@ import io
 from dataclasses import dataclass, field
 
 import fsspec
+import numpy as np
 from PIL import Image
 
 
 @dataclass
 class Copy:
-    """Une copie d'élève : son identifiant, son image et les codes experts.
-
-    Attributes:
-        copy_id: identifiant de la copie (nom de fichier image).
-        image_path: chemin (local ou s3://) de l'image.
-        expert_codes: codes de l'annotateur par item (vérité de terrain).
-        item_ids: identifiants des items.
-    """
+    """Une copie d'élève : son identifiant, son image et les codes experts."""
 
     copy_id: str
     image_path: str
@@ -37,37 +26,58 @@ class Copy:
 
 
 def _join(base: str, name: str) -> str:
-    """Concatène un dossier (local ou s3://) et un nom de fichier."""
+    """Concatène un dossier (local ou s3://) et un nom de fichier.
+
+    Args:
+        base: Dossier de base, avec ou sans slash final.
+        name: Nom du fichier à ajouter.
+
+    Returns:
+        Le chemin complet `base/name` (un seul slash de séparation).
+    """
     return base.rstrip("/") + "/" + name
 
 
 def load_image(path: str) -> Image.Image:
-    """Charge une image (locale ou S3) en niveaux de gris.
-
-    Gère les TIFF 1 bit déguisés en .png. La conversion en "L" (8 bits) évite
-    les erreurs de décodage en aval et homogénéise le format d'entrée.
+    """Charge une image (locale ou S3) en niveaux de gris (gère les TIFF 1 bit déguisés en .png).
 
     Args:
-        path: chemin de l'image (local ou s3://...).
+        path: Chemin local ou S3 de l'image.
 
     Returns:
-        L'image en mode niveaux de gris.
+        L'image convertie en niveaux de gris (mode "L").
     """
     with fsspec.open(path, "rb") as f:
         img = Image.open(io.BytesIO(f.read()))
     return img.convert("L")
 
 
-def load_labels(csv_path: str) -> dict[str, dict[str, str]]:
-    """Charge les codes de l'annotateur depuis le CSV de correction (local ou S3).
+def ink_ratio(image: Image.Image) -> float:
+    """Proportion de pixels sombres (encre) d'une image en niveaux de gris.
 
-    Le CSV a une colonne d'index, une colonne nom d'image, puis une colonne par item.
+    Sert à repérer les formulaires vierges (l'élève n'a rien écrit) : seul le
+    pré-imprimé (titre, lignes, cadre, pied de page) marque quelques pour cent.
 
     Args:
-        csv_path: chemin du CSV (séparateur ';'). Local ou s3://...
+        image: Image PIL (convertie en "L" si besoin).
 
     Returns:
-        Dictionnaire {copy_id: {item_id: code}}.
+        Fraction de pixels d'intensité < 128, entre 0.0 et 1.0.
+    """
+    arr = np.asarray(image.convert("L"))
+    return float((arr < 128).mean())
+
+
+def load_labels(csv_path: str) -> dict[str, dict[str, str]]:
+    """Charge les codes de l'annotateur depuis le CSV de correction (séparateur ';', local ou S3).
+
+    Structure : colonne d'index, colonne nom d'image, puis une colonne par item.
+
+    Args:
+        csv_path: Chemin local ou S3 du CSV de correction.
+
+    Returns:
+        Un dictionnaire `copy_id -> {item_id: code}`, valeurs nettoyées des espaces.
     """
     labels: dict[str, dict[str, str]] = {}
     with fsspec.open(csv_path, "rt", encoding="utf-8") as f:
@@ -83,7 +93,14 @@ def load_labels(csv_path: str) -> dict[str, dict[str, str]]:
 
 
 def _exists(path: str) -> bool:
-    """Teste l'existence d'un fichier local ou S3."""
+    """Teste l'existence d'un fichier local ou S3.
+
+    Args:
+        path: Chemin local ou S3 à vérifier.
+
+    Returns:
+        True si le fichier existe, False sinon.
+    """
     fs, _, paths = fsspec.get_fs_token_paths(path)
     return bool(paths) and fs.exists(paths[0])
 
@@ -95,13 +112,15 @@ def load_dataset(
 ) -> list[Copy]:
     """Construit la liste des copies à partir des images et du CSV de labels.
 
+    Ne retient que les copies dont l'image existe réellement dans `images_dir`.
+
     Args:
-        images_dir: dossier des imagettes (local ou s3://...).
-        labels_csv: chemin du CSV de codes annotateur (local ou s3://...).
-        limit: nombre maximal de copies à charger (None = toutes).
+        images_dir: Dossier (local ou S3) contenant les imagettes.
+        labels_csv: Chemin du CSV des codes experts.
+        limit: Nombre maximal de copies à charger (toutes si None).
 
     Returns:
-        Liste de Copy, ordonnée par identifiant.
+        La liste des copies trouvées, triées par identifiant.
     """
     labels = load_labels(labels_csv)
 

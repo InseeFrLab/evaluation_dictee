@@ -1,8 +1,8 @@
 """Tests de la détection des copies non transcrites."""
 
 from evaluation_dictee.config import ModelConfig, PromptConfig
+from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy
-from evaluation_dictee.data.reference import GridItem
 from evaluation_dictee.models.vlm import VLMScorer
 
 

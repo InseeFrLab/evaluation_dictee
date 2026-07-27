@@ -1,0 +1,78 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIG DE RÉFÉRENCE — fine-tuning HTR (QLoRA) sur Scoledit
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#  Ce fichier documente TOUS les paramètres, avec leurs valeurs par défaut
+#  (entre crochets). Sert de MODÈLE À COPIER. Tout champ omis reprend son défaut :
+#  en pratique, seuls `name`, `base_model` et quelques hyperparamètres changent.
+#
+#  ⚠ À lancer depuis un service GPU du SSP Cloud (H100 80 Go recommandé).
+#  Schéma de validation : FinetuneConfig (scripts/finetune_htr_scoledit.py).
+#
+#  Prérequis :
+#    uv pip install unsloth trl peft transformers bitsandbytes \
+#                accelerate datasets pillow s3fs pyyaml pydantic mlflow
+#  Lancer :
+#    uv run scripts/finetune_htr_scoledit.py --config configs/finetune/<fichier>.yaml
+#
+#  Voir configs/README.md pour la logique d'ensemble.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Nom UNIQUE du run (run MLflow + dossier de sortie). REQUIS.
+name: htr_REFERENCE_finetune_v1
+
+# Modèle de base à fine-tuner (identifiant HuggingFace).   [défaut : unsloth/gemma-4-27b-it]
+base_model: unsloth/gemma-4-27b-it
+# Charger en 4-bit (QLoRA) : ~20 Go VRAM au lieu de ~60.   [défaut : true]
+# Sur H100 80 Go, mettre false pour du LoRA plein (meilleure qualité, +VRAM).
+load_in_4bit: true
+
+# ── Données Scoledit (multi-niveaux + split train/val/test) ─────────────────
+data:
+  # Racines S3 ; les sous-dossiers CP/, CE1/, …, CM2/ sont ajoutés au runtime.
+  scans_root:       s3://projet-production-ecrits-depp/scoledit/scans        # [défaut : celui-ci]
+  annotations_root: s3://projet-production-ecrits-depp/scoledit/annotation   # [défaut : celui-ci]
+  # Niveaux inclus dans l'entraînement.       [défaut : [CP, CE1, CE2, CM1, CM2]]
+  levels: [CP, CE1, CE2, CM1, CM2]
+  # Répartition : train_ratio + val_ratio, le reste = test (jamais vu).
+  train_ratio: 0.70                                       # [défaut : 0.70]
+  val_ratio: 0.15                                         # [défaut : 0.15]
+  seed: 42                                                # [défaut : 42]
+  # Limiter le nombre total d'échantillons. null = tout.  [défaut : null]
+  limit: null                                             # mettre 100 pour un test rapide
+
+# ── Hyperparamètres LoRA ────────────────────────────────────────────────────
+lora:
+  r: 16                       # rang ; 16 = compromis qualité/mémoire, monter à 32 si stagnation [défaut : 16]
+  lora_alpha: 32              # échelle des adapteurs, typiquement 2×r          [défaut : 32]
+  lora_dropout: 0.05          #                                                  [défaut : 0.05]
+  # Cibler vision ET langage est essentiel pour l'HTR (adapter la vue enfantine
+  # ET la génération de texte fidèle).
+  finetune_vision_layers: true                            # [défaut : true]
+  finetune_language_layers: true                          # [défaut : true]
+  finetune_attention_modules: true                        # [défaut : true]
+  finetune_mlp_modules: true                              # [défaut : true]
+
+# ── Hyperparamètres d'entraînement ──────────────────────────────────────────
+training:
+  output_dir: checkpoints/htr_REFERENCE_finetune_v1       # [défaut : checkpoints/htr_gemma4_scoledit]
+  num_train_epochs: 3               # point de départ ; ajuster selon la loss val [défaut : 3]
+  per_device_train_batch_size: 2                          # [défaut : 2]
+  per_device_eval_batch_size: 2                           # [défaut : 2]
+  gradient_accumulation_steps: 8    # batch effectif = 2 × 8 = 16                 [défaut : 8]
+  learning_rate: 2.0e-4                                   # [défaut : 2e-4]
+  warmup_ratio: 0.1                                       # [défaut : 0.1]
+  lr_scheduler_type: cosine         # cosine | linear | constant                 [défaut : cosine]
+  weight_decay: 0.01                                      # [défaut : 0.01]
+  logging_steps: 10                                       # [défaut : 10]
+  eval_steps: 200                                         # [défaut : 200]
+  save_steps: 200                                         # [défaut : 200]
+  save_total_limit: 3               # ne garder que les 3 derniers checkpoints    [défaut : 3]
+  bf16: true                        # H100 supporte bfloat16 nativement           [défaut : true]
+  gradient_checkpointing: true      # −30 % VRAM                                  [défaut : true]
+  report_to: mlflow                 # mlflow | none | tensorboard                 [défaut : mlflow]
+  max_seq_length: 2048                                    # [défaut : 2048]
+
+# Règle des ratures : lire l'état FINAL. Le prompt d'entraînement DOIT être
+# identique à celui d'inférence.                          [défaut : true]
+read_final_state: true

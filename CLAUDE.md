@@ -70,7 +70,7 @@ GPU. Baselines : TrOCR, PyLaia, PP-OCRv5. Repli si GPU contraint : MiniCPM-V-2.6
 > **Raccourci sans GPU** : `gemma4-26b-moe` est déjà servi sur llm.lab (SSP Cloud)
 > et est multimodal (texte + image, OCR et reconnaissance d'écriture). C'est le
 > candidat de première intention pour la méthode C : aucun GPU à privatiser,
-> appel via l'API compatible OpenAI. Voir `configs/dictee_gemma4_zeroshot.yaml`.
+> appel via l'API compatible OpenAI. Voir `configs/scoring/dictee_REFERENCE.yaml`.
 > Attention au mode « thinking » de Gemma 4 : si actif, élaguer le bloc de
 > raisonnement avant de parser le JSON (même précaution que `enable_thinking:false`
 > sur Qwen3).
@@ -117,7 +117,7 @@ evaluation_ecrit/
 │   ├── models/               ← interfaces modèles (VLM via vLLM, HTR, base)
 │   ├── pipeline/             ← orchestration des méthodes A/B/C/D
 │   ├── evaluation/           ← métriques, calibration, comparaison annotateurs
-│   └── utils/                ← logging, MLflow, helpers
+│   └── utils/                ← logging, Langfuse, helpers
 ├── scripts/                  ← points d'entrée CLI (run_benchmark, prepare_data…)
 ├── tests/                    ← tests unitaires (pytest)
 ├── notebooks/                ← exploration (ne pas y mettre de logique réutilisable)
@@ -126,34 +126,40 @@ evaluation_ecrit/
 
 ## 8. Conventions de code
 
-- **Python ≥ 3.11**, gestion des dépendances avec **uv** (ou pip + venv).
-- **Formatage et lint** : `ruff` (formatage + lint). Lancer `ruff check` et
-  `ruff format` avant chaque commit.
+- **Python ≥ 3.11**, gestion des dépendances avec **uv** exclusivement.
+- **Formatage et lint** : `ruff` (formatage + lint). Lancer `uv run ruff check` et
+  `uv run ruff format` avant chaque commit.
 - **Typage** : annoter toutes les fonctions publiques. `mypy` en CI (non bloquant
   au début).
 - **Docstrings** en français, style court (une ligne de résumé + Args/Returns si utile).
 - **Pas de chemin en dur** : tout passe par `configs/*.yaml` et `src/.../config.py`.
 - **Pas de secret dans le code** : identifiants S3, tokens → variables
   d'environnement (`.env`, jamais commité).
-- **Reproductibilité** : chaque expérience = un fichier de config versionné + un run
-  MLflow. Fixer les graines aléatoires.
+- **Reproductibilité** : chaque expérience = un fichier de config versionné + un
+  run tracé dans Langfuse. Structure des traces : **session** (= un lancement,
+  `session_id` = `config.name` + horodatage, donc une session neuve à chaque
+  lancement) → **trace** (= une copie, avec entrée/sortie et score d'accord) →
+  **génération** (= appel LLM). Les paramètres du run sont propagés en tags/metadata
+  (dont le tag `run:<nom>` qui regroupe les lancements d'une même config) et les
+  métriques agrégées sont enregistrées en Scores + metadata (voir `utils/tracking.py`). Le fine-tuning HTR sur GPU reste suivi via MLflow
+  (courbes d'entraînement, hors périmètre Langfuse). Fixer les graines aléatoires.
 - **Commits** : messages clairs en français, format `type: description`
   (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`).
 
 ## 9. Commandes utiles
 
 ```bash
-# Installer l'environnement
-uv sync                         # ou: pip install -e ".[dev]"
+# Installer l'environnement (le groupe dev — ruff, mypy, pytest — est inclus d'office)
+uv sync
 
 # Qualité de code
-ruff check src tests            # lint
-ruff format src tests           # formatage
-pytest                          # tests
-mypy src                        # typage
+uv run ruff check src tests     # lint
+uv run ruff format src tests    # formatage
+uv run pytest                   # tests
+uv run mypy src                 # typage
 
 # Lancer un benchmark à partir d'une config
-python scripts/run_benchmark.py --config configs/dictee_gemma4_zeroshot.yaml
+uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
 ```
 
 ### Runs longs — utiliser screen ou nohup
@@ -174,7 +180,7 @@ mkdir -p logs
 navigateur et revenir le lendemain.
 ```bash
 screen -S dictee                                            # créer la session
-python scripts/run_benchmark.py --config configs/dictee_gemma4_cot.yaml
+uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
 # Détacher : Ctrl+A puis D  (le job continue en arrière-plan)
 screen -r dictee                                            # se rattacher plus tard
 screen -ls                                                  # lister les sessions
@@ -183,10 +189,10 @@ screen -ls                                                  # lister les session
 **Option 2 — nohup.** Sans interface interactive, log dans un fichier.
 ```bash
 mkdir -p logs
-nohup python scripts/run_benchmark.py --config configs/dictee_gemma4_cot.yaml \
-      > logs/dictee_gemma4_cot.log 2>&1 &
-echo $! > logs/dictee_gemma4_cot.pid          # noter le PID pour arrêter plus tard
-tail -f logs/dictee_gemma4_cot.log            # suivre le log en direct
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml \
+      > logs/dictee_REFERENCE.log 2>&1 &
+echo $! > logs/dictee_REFERENCE.pid          # noter le PID pour arrêter plus tard
+tail -f logs/dictee_REFERENCE.log            # suivre le log en direct
 ```
 
 ### Checkpointing et reprise après crash

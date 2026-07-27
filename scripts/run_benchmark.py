@@ -1,19 +1,16 @@
-"""Point d'entrée simple pour lancer un benchmark.
+"""Point d'entrée pour lancer un benchmark de scoring.
 
-Pour les débutant·e·s : ce script est volontairement minimal. Il lit une config,
-construit le modèle, lance le benchmark et affiche les métriques. Suivre le fil
-de `run_benchmark` (dans src/.../pipeline/benchmark.py) pour comprendre le projet.
-
-Usage :
-    python scripts/run_benchmark.py --config configs/dictee_qwen7b_zeroshot.yaml
+Usage : uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
 """
 
 from __future__ import annotations
 
 import argparse
 
+from langfuse import get_client
+
 from evaluation_dictee.config import Secrets, load_config
-from evaluation_dictee.data.reference import load_grid
+from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.evaluation.calibration import referral_curve
 from evaluation_dictee.models.factory import build_scorer
 from evaluation_dictee.pipeline.benchmark import run_benchmark
@@ -24,7 +21,7 @@ logger = get_logger(__name__)
 
 
 def main() -> None:
-    """Parse les arguments, lance le benchmark, affiche métriques et calibration."""
+    """Lance le benchmark et affiche métriques et calibration."""
     parser = argparse.ArgumentParser(description="Lance un benchmark d'évaluation.")
     parser.add_argument("--config", required=True, help="Chemin du fichier YAML.")
     args = parser.parse_args()
@@ -40,17 +37,31 @@ def main() -> None:
         api_key=secrets.llm_api_key,
     )
 
-    with experiment_run(config):
-        result = run_benchmark(config, scorer)
-        log_metrics(
-            {
-                "raw_agreement": result.metrics.raw_agreement,
-                "cohen_kappa": result.metrics.cohen_kappa,
-            }
-        )
+    try:
+        with experiment_run(config):
+            result = run_benchmark(config, scorer)
+            log_metrics(
+                config,
+                {
+                    "raw_agreement": result.metrics.raw_agreement,
+                    "cohen_kappa": result.metrics.cohen_kappa,
+                    "n_items": result.metrics.n_items,
+                    "n_blank": len(result.blank_copies),
+                    "n_non_transcribed": len(result.non_transcribed),
+                },
+            )
+    finally:
+        # Langfuse envoie les traces en asynchrone : flush obligatoire sinon les
+        # dernières traces sont perdues si le script se termine avant l'envoi.
+        get_client().flush()
 
     logger.info("Accord brut : %.1f%%", result.metrics.raw_agreement * 100)
     logger.info("Kappa de Cohen : %.3f", result.metrics.cohen_kappa)
+    logger.info(
+        "Copies vierges auto-codées « 0 » : %d | copies non transcrites (exclues) : %d",
+        len(result.blank_copies),
+        len(result.non_transcribed),
+    )
 
     logger.info("Courbe de renvoi humain :")
     for point in referral_curve(result.y_true, result.y_pred, result.confidences):

@@ -1,15 +1,7 @@
-"""Mini-interface HTML pour inspecter visuellement les transcriptions HTR.
+"""HTML autonome (image base64) comparant, par copie Scoledit, référence et transcription modèle.
 
-Pour chaque copie Scoledit sélectionnée (les N pires, ou N aléatoires), affiche
-côte à côte : l'image de la copie, la transcription de référence humaine et la
-transcription produite par le modèle, avec les mots divergents surlignés.
-
-Fichier HTML autonome (image en base64), à ouvrir dans le navigateur. Idéal pour
-le diagnostic rapide des erreurs de lecture.
-
-ATTENTION DONNÉES SENSIBLES : le HTML contient des images d'élèves mineurs. À ne
-jamais sortir de l'environnement sécurisé, à ne jamais committer (dossier data/
-ignoré par Git).
+DONNÉES SENSIBLES : le HTML contient des images d'élèves mineurs. À ne jamais
+sortir de l'environnement sécurisé ni committer.
 """
 
 from __future__ import annotations
@@ -27,7 +19,15 @@ from evaluation_dictee.data.loaders import load_image
 
 
 def _img_base64(path: str, max_width: int = 1100) -> str:
-    """Charge l'image, la redimensionne si besoin, renvoie une data URL PNG."""
+    """Charge l'image, la redimensionne si besoin, renvoie une data URL PNG.
+
+    Args:
+        path: Chemin de l'image à charger.
+        max_width: Largeur maximale en pixels ; l'image est réduite au-delà.
+
+    Returns:
+        Data URL PNG encodée en base64.
+    """
     img: Image.Image = load_image(path)
     if img.width > max_width:
         ratio = max_width / img.width
@@ -38,7 +38,16 @@ def _img_base64(path: str, max_width: int = 1100) -> str:
 
 
 def _surligne_diff(ref_mots: list[str], hyp_mots: list[str]) -> tuple[str, str]:
-    """Renvoie les deux séquences HTML avec surlignage des divergences."""
+    """Renvoie les deux séquences HTML avec surlignage des divergences.
+
+    Args:
+        ref_mots: Mots de la référence.
+        hyp_mots: Mots de l'hypothèse (transcription du modèle).
+
+    Returns:
+        Couple (HTML référence, HTML hypothèse), divergences surlignées en vert
+        côté référence et en rouge côté hypothèse.
+    """
     sm = difflib.SequenceMatcher(a=ref_mots, b=hyp_mots)
     diff_ref, diff_hyp = set(), set()
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
@@ -47,6 +56,16 @@ def _surligne_diff(ref_mots: list[str], hyp_mots: list[str]) -> tuple[str, str]:
             diff_hyp.update(range(j1, j2))
 
     def _render(mots: list[str], surlignes: set[int], couleur: str) -> str:
+        """Rend une liste de mots en spans HTML, surlignant les indices donnés.
+
+        Args:
+            mots: Mots à rendre.
+            surlignes: Indices des mots à surligner.
+            couleur: Couleur de fond des mots surlignés.
+
+        Returns:
+            Fragment HTML concaténé.
+        """
         out = []
         for i, mot in enumerate(mots):
             bg = couleur if i in surlignes else "transparent"
@@ -60,7 +79,16 @@ def _surligne_diff(ref_mots: list[str], hyp_mots: list[str]) -> tuple[str, str]:
 
 
 def _build_sample_html(scan: str, image_path: str, row: pd.Series) -> str:
-    """Construit le HTML d'un échantillon Scoledit."""
+    """Construit le HTML d'un échantillon Scoledit.
+
+    Args:
+        scan: Identifiant du scan (copie).
+        image_path: Chemin de l'image numérisée.
+        row: Ligne de prédictions (référence, hypothese, cer, wer, n_mots_ref).
+
+    Returns:
+        Fragment HTML <section> de l'échantillon.
+    """
     img_data = _img_base64(image_path)
     ref_mots = row["reference"].split()
     hyp_mots = row["hypothese"].split() if row["hypothese"] else []
@@ -110,6 +138,15 @@ _PAGE_CSS = """
 
 
 def _wrap_page(fragments: list[str], title: str) -> str:
+    """Assemble les fragments d'échantillons en une page HTML complète.
+
+    Args:
+        fragments: Fragments HTML des échantillons.
+        title: Titre de la page.
+
+    Returns:
+        Document HTML complet.
+    """
     return f"""<!DOCTYPE html>
 <html lang="fr"><head><meta charset="utf-8"/>
 <title>{html.escape(title)}</title><style>{_PAGE_CSS}</style></head>
@@ -132,13 +169,13 @@ def report_worst_transcriptions(
     """Génère le HTML des N transcriptions au plus fort CER.
 
     Args:
-        predictions_df: prédictions HTR (scan, reference, hypothese, cer, wer, ...).
-        scans_dir: dossier des images (local ou s3://).
-        output_path: chemin du fichier HTML à écrire.
-        n: nombre d'échantillons (les pires) à inclure.
+        predictions_df: Prédictions par échantillon (colonnes scan, cer, ...).
+        scans_dir: Dossier contenant les images numérisées.
+        output_path: Chemin du fichier HTML à écrire.
+        n: Nombre de transcriptions à inclure.
 
     Returns:
-        Le chemin du fichier HTML produit.
+        Chemin du fichier HTML écrit.
     """
     pires = predictions_df.sort_values("cer", ascending=False).head(n)
     fragments = [
@@ -161,20 +198,17 @@ def report_random_transcriptions(
     n: int = 10,
     seed: int = 42,
 ) -> Path:
-    """Génère le HTML de N transcriptions tirées au hasard.
-
-    Utile pour éviter de ne regarder que les cas pathologiques : les tirages
-    aléatoires donnent une vue plus représentative de la performance moyenne.
+    """Génère le HTML de N transcriptions tirées au hasard (plus représentatif que les pires).
 
     Args:
-        predictions_df: prédictions HTR.
-        scans_dir: dossier des images.
-        output_path: chemin du fichier HTML.
-        n: nombre d'échantillons aléatoires.
-        seed: graine aléatoire pour la reproductibilité.
+        predictions_df: Prédictions par échantillon (colonnes scan, cer, ...).
+        scans_dir: Dossier contenant les images numérisées.
+        output_path: Chemin du fichier HTML à écrire.
+        n: Nombre de transcriptions souhaité (borné par la taille du corpus).
+        seed: Graine aléatoire de l'échantillonnage.
 
     Returns:
-        Le chemin du fichier HTML produit.
+        Chemin du fichier HTML écrit.
     """
     n_effectif = min(n, len(predictions_df))
     echantillon = predictions_df.sample(n=n_effectif, random_state=seed)

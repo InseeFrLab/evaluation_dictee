@@ -1,7 +1,7 @@
 """Point d'entrée : évaluer la transcription (HTR) d'un modèle sur Scoledit.
 
 Usage :
-    python scripts/run_htr_benchmark.py --config configs/htr_gemma4_scoledit.yaml
+    uv run scripts/run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 
 def main() -> None:
-    """Charge la config, transcrit le corpus Scoledit, affiche CER/WER."""
+    """Transcrit le corpus Scoledit et affiche CER/WER."""
     parser = argparse.ArgumentParser(description="Évalue la transcription HTR.")
     parser.add_argument("--config", required=True, help="Chemin du fichier YAML.")
     args = parser.parse_args()
@@ -48,7 +48,12 @@ def main() -> None:
         read_final_state=cfg.get("read_final_state", True),
     )
 
-    result = run_htr_benchmark(samples, transcriber, run_name=cfg["name"])
+    result = run_htr_benchmark(
+        samples,
+        transcriber,
+        run_name=cfg["name"],
+        concurrency=cfg.get("concurrency", 8),
+    )
 
     logger.info("CER moyen : %.1f%%", result.mean_cer * 100)
     logger.info("WER moyen : %.1f%%", result.mean_wer * 100)

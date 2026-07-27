@@ -1,9 +1,4 @@
-"""Calibration de la confiance et courbe de renvoi humain.
-
-Livrable décisionnel central du projet (CLAUDE.md §4) : pour chaque seuil de
-confiance, on mesure la part d'items renvoyés à un correcteur humain et le taux
-d'erreur résiduel sur les items conservés (auto-validés par le modèle).
-"""
+"""Calibration de la confiance et courbe de renvoi humain (livrable décisionnel, CLAUDE.md §4)."""
 
 from __future__ import annotations
 
@@ -12,14 +7,7 @@ from dataclasses import dataclass
 
 @dataclass
 class ReferralPoint:
-    """Un point de la courbe renvoi-humain / erreur-résiduelle.
-
-    Attributes:
-        threshold: seuil de confiance ; les items sous ce seuil sont renvoyés.
-        human_referral_rate: part d'items renvoyés à l'humain.
-        residual_error_rate: taux d'erreur sur les items auto-validés.
-        n_auto_validated: nombre d'items auto-validés.
-    """
+    """Un point de la courbe renvoi-humain / erreur-résiduelle."""
 
     threshold: float
     human_referral_rate: float
@@ -33,20 +21,19 @@ def referral_curve(
     confidences: list[float | None],
     thresholds: list[float] | None = None,
 ) -> list[ReferralPoint]:
-    """Calcule la courbe « taux de renvoi humain vs taux d'erreur résiduel ».
+    """Courbe « taux de renvoi humain vs taux d'erreur résiduel ».
 
-    Les items dont la confiance est strictement inférieure au seuil sont
-    « renvoyés à l'humain » et exclus du calcul d'erreur résiduelle. Les items
-    sans confiance disponible sont toujours renvoyés.
+    Un item est renvoyé si sa confiance est < seuil ou absente (None).
 
     Args:
         y_true: codes experts.
-        y_pred: codes prédits.
-        confidences: confiance par item (None = toujours renvoyé).
-        thresholds: seuils à tester (par défaut 0.0, 0.1, ..., 1.0).
+        y_pred: codes prédits, alignés sur y_true.
+        confidences: confiance de chaque prédiction (None = pas de confiance).
+        thresholds: seuils à balayer ; par défaut 0.0 à 1.0 par pas de 0.1.
 
     Returns:
-        Liste de points de la courbe, un par seuil.
+        Un point par seuil : taux de renvoi humain, erreur résiduelle sur les
+        items auto-validés et nombre d'items auto-validés.
     """
     if thresholds is None:
         thresholds = [i / 10 for i in range(11)]
@@ -83,15 +70,7 @@ def referral_curve(
 
 @dataclass
 class ReliabilityBin:
-    """Une tranche de confiance pour le diagramme de fiabilité.
-
-    Attributes:
-        bin_lower: borne inférieure de la tranche de confiance.
-        bin_upper: borne supérieure.
-        mean_confidence: confiance moyenne des items de la tranche.
-        accuracy: taux d'accord observé dans la tranche.
-        n: nombre d'items dans la tranche.
-    """
+    """Une tranche de confiance pour le diagramme de fiabilité."""
 
     bin_lower: float
     bin_upper: float
@@ -108,17 +87,17 @@ def reliability_bins(
 ) -> list[ReliabilityBin]:
     """Regroupe les items par tranche de confiance et mesure l'accord réel.
 
-    Un modèle bien calibré a accuracy ≈ mean_confidence dans chaque tranche
-    (les points du diagramme de fiabilité sont sur la diagonale).
+    Un modèle bien calibré a accuracy ≈ mean_confidence dans chaque tranche.
 
     Args:
         y_true: codes experts.
-        y_pred: codes prédits.
-        confidences: confiance par item (None = ignoré).
-        n_bins: nombre de tranches entre 0 et 1.
+        y_pred: codes prédits, alignés sur y_true.
+        confidences: confiance de chaque prédiction (None = item ignoré).
+        n_bins: nombre de tranches de confiance sur [0, 1].
 
     Returns:
-        Une liste de tranches non vides.
+        Les tranches non vides, chacune avec ses bornes, la confiance moyenne,
+        l'accord observé et l'effectif.
     """
     bins: list[ReliabilityBin] = []
     for b in range(n_bins):
@@ -127,7 +106,7 @@ def reliability_bins(
         for t, p, c in zip(y_true, y_pred, confidences, strict=True):
             if c is None:
                 continue
-            # dernière tranche inclusive à droite pour capter c == 1.0
+            # Dernière tranche inclusive à droite pour capter c == 1.0
             if (lo <= c < hi) or (b == n_bins - 1 and c == hi):
                 confs.append(c)
                 corrects.append(t == p)
@@ -152,18 +131,18 @@ def expected_calibration_error(
 ) -> float:
     """ECE : écart moyen pondéré entre confiance annoncée et accord observé.
 
-    0 = parfaitement calibré. Au-delà de ~0.1, le score de confiance n'est pas
-    fiable tel quel et doit être recalibré avant d'être utilisé pour le seuil
-    de renvoi humain.
+    0 = parfaitement calibré. Au-delà de ~0.1, la confiance doit être recalibrée
+    avant usage pour le seuil de renvoi humain.
 
     Args:
         y_true: codes experts.
-        y_pred: codes prédits.
-        confidences: confiance par item.
-        n_bins: nombre de tranches.
+        y_pred: codes prédits, alignés sur y_true.
+        confidences: confiance de chaque prédiction (None = item ignoré).
+        n_bins: nombre de tranches de confiance sur [0, 1].
 
     Returns:
-        L'ECE (entre 0 et 1).
+        L'ECE (écart absolu accord/confiance pondéré par les effectifs), ou NaN
+        si aucun item n'a de confiance.
     """
     bins = reliability_bins(y_true, y_pred, confidences, n_bins)
     n_total = sum(b.n for b in bins)

@@ -1,24 +1,8 @@
 """Comparaison multi-modèles pour construire un score de confiance par copie.
 
-Principe : quand plusieurs modèles indépendants s'accordent sur un item, la
-prédiction est fiable ; quand ils divergent, c'est un signal d'incertitude qui
-appelle un renvoi humain. Le désaccord inter-modèles est un bien meilleur
-prédicteur de confiance que le score annoncé par un modèle unique (qui est en
-pratique quasi-constant à 1.0 dans nos benchmarks — inexploitable).
-
-Workflow type :
-    1. Lancer N runs indépendants (mêmes copies, modèles/prompts différents),
-       chacun produit son `<run>_predictions.jsonl`.
-    2. `load_multi_runs([run1, run2, ...])` charge les N runs et les joint sur
-       (copy_id, item_id) pour construire une prédiction par modèle par ligne.
-    3. `agreement_per_item()` calcule le nb de modèles d'accord sur chaque item.
-    4. `confidence_score()` agrège au niveau copie : proportion d'items où tous
-       les modèles s'accordent = score de confiance de la copie.
-    5. `referral_curve_multi()` compare, pour chaque seuil de renvoi, l'accord
-       vs un expert humain (si dispo) sur les copies retenues.
-
-Structure agnostique du nombre de modèles : marche de N=1 (score = confiance
-d'un modèle unique) à N quelconque.
+Le désaccord inter-modèles prédit bien mieux l'incertitude que la confiance d'un
+modèle unique (quasi-constante à 1.0 dans nos benchmarks, inexploitable). Marche
+de N=1 à N quelconque.
 """
 
 from __future__ import annotations
@@ -37,25 +21,19 @@ def load_multi_runs(
 ) -> pd.DataFrame:
     """Charge N runs indépendants et les joint sur (copy_id, item_id).
 
-    Chaque run doit avoir été produit par `run_benchmark.py` et posséder son
-    fichier `<run>_predictions.jsonl` dans `output_dir`.
+    Le premier run de la liste fournit les colonnes communes (y_true, etc.).
 
     Args:
-        run_names: identifiants des runs à comparer (ex. ["dictee_gemma4_zeroshot",
-            "dictee_gemma4_cot"]). Le premier de la liste sert de référence pour
-            les colonnes partagées (y_true, transcription_ref, etc.).
-        output_dir: dossier contenant les JSONL de prédictions.
+        run_names: noms des runs à charger (fichiers `<run>_predictions.jsonl`).
+        output_dir: dossier contenant les fichiers de prédictions.
 
     Returns:
-        DataFrame avec les colonnes :
-        - copy_id, item_id  : clé de jointure
-        - y_true            : code expert (identique dans tous les runs)
-        - y_pred__<run1>, y_pred__<run2>, ... : code prédit par chaque modèle
-        - conf__<run1>, conf__<run2>, ...    : confiance de chaque modèle
+        Un DataFrame joint (inner) sur (copy_id, item_id), avec y_true et une
+        paire de colonnes `y_pred__<run>` / `conf__<run>` par run.
 
     Raises:
-        FileNotFoundError: si un run est absent.
-        ValueError: si les runs ne portent pas sur les mêmes (copy_id, item_id).
+        ValueError: si run_names est vide ou si aucun item n'est commun aux runs.
+        FileNotFoundError: si un fichier de prédictions est absent.
     """
     output_dir = Path(output_dir)
     if not run_names:
@@ -67,21 +45,18 @@ def load_multi_runs(
         if not path.exists():
             raise FileNotFoundError(f"Prédictions manquantes : {path}")
         df_run = load_predictions(path)
-        # Alias des colonnes propres au modèle
         renamed = df_run.rename(columns={"y_pred": f"y_pred__{run}", "confidence": f"conf__{run}"})
         dfs[run] = renamed
 
-    # Le premier run fournit les colonnes communes (y_true, item_id, copy_id)
     ref = dfs[run_names[0]][["copy_id", "item_id", "y_true"]].copy()
 
-    # Joint successivement les prédictions de chaque run
     merged = ref
     for run in run_names:
         cols = ["copy_id", "item_id", f"y_pred__{run}", f"conf__{run}"]
         merged = merged.merge(
             dfs[run][cols],
             on=["copy_id", "item_id"],
-            how="inner",  # on ne garde que les (copy_id, item_id) présents PARTOUT
+            how="inner",  # ne garde que les (copy_id, item_id) présents PARTOUT
         )
 
     if merged.empty:
@@ -96,22 +71,18 @@ def agreement_per_item(df_multi: pd.DataFrame) -> pd.DataFrame:
     """Ajoute au DataFrame multi-runs les colonnes de désaccord par item.
 
     Args:
-        df_multi: sortie de `load_multi_runs`.
+        df_multi: DataFrame issu de `load_multi_runs` (colonnes `y_pred__<run>`).
 
     Returns:
-        Le DataFrame enrichi de :
-        - n_modeles          : nombre total de modèles
-        - modal_pred         : prédiction majoritaire parmi les modèles
-        - n_accord_modeles   : nombre de modèles alignés sur la modale
-        - unanimite          : True si tous les modèles s'accordent
-        - modele_vs_expert__<run> : True si ce modèle est d'accord avec l'expert
+        Une copie du DataFrame enrichie de : `modal_pred` (code majoritaire),
+        `n_accord_modeles`, `n_modeles`, `unanimite`, et un booléen
+        `modele_vs_expert__<run>` par run (prédiction == expert).
     """
     pred_cols = [c for c in df_multi.columns if c.startswith("y_pred__")]
     n_modeles = len(pred_cols)
 
     out = df_multi.copy()
 
-    # Prédiction majoritaire et effectif d'accord
     def _modal_and_count(row):
         counts = Counter(row[c] for c in pred_cols)
         modal, n_acc = counts.most_common(1)[0]
@@ -123,7 +94,6 @@ def agreement_per_item(df_multi: pd.DataFrame) -> pd.DataFrame:
     out["n_modeles"] = n_modeles
     out["unanimite"] = out["n_accord_modeles"] == n_modeles
 
-    # Accord de chaque modèle avec l'expert
     for c in pred_cols:
         run = c.removeprefix("y_pred__")
         out[f"modele_vs_expert__{run}"] = out[c] == out["y_true"]
@@ -135,15 +105,12 @@ def confidence_score(df_agree: pd.DataFrame) -> pd.DataFrame:
     """Agrège au niveau copie un score de confiance basé sur le désaccord.
 
     Args:
-        df_agree: sortie de `agreement_per_item()`.
+        df_agree: DataFrame issu de `agreement_per_item`.
 
     Returns:
-        DataFrame indexé par copy_id :
-        - n_items          : nb d'items de la copie
-        - pct_unanime      : % d'items où tous les modèles s'accordent
-        - accord_moyen_mod : nb moyen de modèles alignés sur la modale (max = N)
-        - n_desaccord_max  : nb d'items où l'accord inter-modèles est minimum
-        - score_confiance  : pct_unanime, mais renommé pour la lisibilité (0-100)
+        Un DataFrame indexé par copy_id : effectif, part d'items unanimes,
+        accord inter-modèles moyen, nombre d'items sous la majorité et
+        `score_confiance` (part d'items unanimes), trié par score décroissant.
     """
     n_modeles = int(df_agree["n_modeles"].iloc[0])
     rows = []
@@ -151,8 +118,7 @@ def confidence_score(df_agree: pd.DataFrame) -> pd.DataFrame:
         n = len(grp)
         n_unan = int(grp["unanimite"].sum())
         accord_moy = float(grp["n_accord_modeles"].mean())
-        # Combien d'items ont l'accord MINIMAL possible (n_accord = ceil(N/2), ie
-        # dispersion maximale possible sur un item catégoriel) ?
+        # Items où l'accord inter-modèles est en dessous de la majorité (dispersion max)
         seuil_min = (n_modeles // 2) + 1
         n_dis_max = int((grp["n_accord_modeles"] < seuil_min).sum()) if n_modeles > 1 else 0
         rows.append(
@@ -173,24 +139,19 @@ def referral_curve_multi(
     conf: pd.DataFrame,
     reference_run: str,
 ) -> pd.DataFrame:
-    """Courbe de renvoi humain : pour chaque seuil de confiance, quel accord ?
-
-    Simule une stratégie : « renvoyer les copies dont le score de confiance est
-    inférieur à τ ». Pour chaque τ, calcule le % de copies renvoyées et l'accord
-    résiduel entre le modèle de RÉFÉRENCE et l'expert sur les copies retenues.
+    """Courbe de renvoi humain : renvoie les copies dont le score < τ, mesure l'accord retenu.
 
     Args:
-        df_agree: DataFrame item-niveau enrichi par `agreement_per_item()`.
-        conf: scores de confiance par copie (sortie de `confidence_score()`).
-        reference_run: run dont on mesure l'accord modèle-expert sur les copies
-            retenues (typiquement le modèle qu'on envisage de mettre en production).
+        df_agree: DataFrame issu de `agreement_per_item` (contient le run de référence).
+        conf: scores de confiance par copie issus de `confidence_score`.
+        reference_run: run dont l'accord avec l'expert sert de référence.
 
     Returns:
-        DataFrame par seuil τ :
-        - seuil_confiance    : τ (%), copies renvoyées si score_confiance < τ
-        - pct_copies_renvoyees
-        - pct_accord_retenues : accord modèle-expert sur les copies retenues (%)
-        - n_copies_retenues
+        Un DataFrame, une ligne par seuil τ (0 à 100 par pas de 5) : part de
+        copies renvoyées, accord des copies retenues, nombre de copies retenues.
+
+    Raises:
+        ValueError: si le run de référence est absent de df_agree.
     """
     pred_col = f"y_pred__{reference_run}"
     if pred_col not in df_agree.columns:
@@ -199,7 +160,6 @@ def referral_curve_multi(
             f"Colonnes disponibles : {[c for c in df_agree.columns if c.startswith('y_pred__')]}"
         )
 
-    # Table par copie : score de confiance + accord modèle-expert de la copie
     copies = conf.copy()
     accord_par_copie = df_agree.groupby("copy_id").apply(
         lambda g: (g[pred_col] == g["y_true"]).mean() * 100
@@ -229,14 +189,11 @@ def disagreement_type_summary(df_agree: pd.DataFrame) -> pd.DataFrame:
     """Répartition des items selon le niveau d'accord inter-modèles.
 
     Args:
-        df_agree: DataFrame item-niveau enrichi par `agreement_per_item()`.
+        df_agree: DataFrame issu de `agreement_per_item`.
 
     Returns:
-        DataFrame résumé :
-        - n_accord_modeles (1..N)
-        - n_items
-        - pct_items
-        - accord_avec_expert : parmi ces items, % où la modale = expert
+        Un DataFrame indexé par `n_accord_modeles` : effectif, part des items et
+        accord du code modal avec l'expert, pour chaque niveau d'accord observé.
     """
     n_modeles = int(df_agree["n_modeles"].iloc[0])
     n_total = len(df_agree)
@@ -257,7 +214,17 @@ def disagreement_type_summary(df_agree: pd.DataFrame) -> pd.DataFrame:
 
 
 def _wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
-    """Intervalle de Wilson (pourcentages). Utilisé pour l'accord retenu."""
+    """Intervalle de Wilson (pourcentages). Utilisé pour l'accord retenu.
+
+    Args:
+        k: nombre de succès.
+        n: nombre total d'observations.
+        z: quantile normal (1.96 pour un niveau de 95 %).
+
+    Returns:
+        Les bornes basse et haute de l'intervalle, en pourcentages, ou (NaN, NaN)
+        si n vaut 0.
+    """
     if n == 0:
         return float("nan"), float("nan")
     p = k / n
@@ -272,12 +239,25 @@ def referral_curve_with_ci(
     conf: pd.DataFrame,
     reference_run: str,
 ) -> pd.DataFrame:
-    """Comme `referral_curve_multi`, avec IC Wilson sur l'accord retenu."""
+    """Comme `referral_curve_multi`, avec IC Wilson sur l'accord retenu.
+
+    Args:
+        df_agree: DataFrame issu de `agreement_per_item` (contient le run de référence).
+        conf: scores de confiance par copie issus de `confidence_score`.
+        reference_run: run dont l'accord avec l'expert sert de référence.
+
+    Returns:
+        Un DataFrame, une ligne par seuil τ (0 à 100 par pas de 5) : part de
+        copies renvoyées, accord des items retenus avec son IC Wilson, nombre de
+        copies et d'items retenus.
+
+    Raises:
+        ValueError: si le run de référence est absent de df_agree.
+    """
     pred_col = f"y_pred__{reference_run}"
     if pred_col not in df_agree.columns:
         raise ValueError(f"Run {reference_run!r} absent.")
 
-    # Table par copie : score + booléen accord sur chaque item
     copies_conf = conf["score_confiance"].to_dict()
     df = df_agree.copy()
     df["_correct"] = (df[pred_col] == df["y_true"]).astype(int)

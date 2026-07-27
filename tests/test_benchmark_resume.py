@@ -28,7 +28,6 @@ def test_load_processed_ignores_truncated_last_line(tmp_path: Path) -> None:
         f.write(json.dumps({"copy_id": "c1.png", "item_id": "i1"}) + "\n")
         # Ligne tronquée (le crash a coupé au milieu du json)
         f.write('{"copy_id": "c2.png", "item_id":')
-    # Doit lire c1 et ignorer la ligne tronquée sans lever
     assert _load_processed_copy_ids(path) == {"c1.png"}
 
 

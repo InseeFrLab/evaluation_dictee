@@ -1,18 +1,8 @@
 """Analyse des résultats par item et par copie, avec intervalles de confiance.
 
-Toutes les fonctions renvoient des DataFrames pandas, prêts à tracer ou à
-exporter. Conventions :
-- « erreur » = code != "1" (dans la grille simplifiée : 9 ou 0)
-- détection d'erreur : classe positive = l'expert a codé une erreur
-
-Vocabulaire des désaccords (du point de vue du modèle) :
-- SUR-CORRECTION : l'expert voit une erreur, le modèle code correct.
-  Le modèle a « corrigé » silencieusement la faute en lisant. Biais VLM connu.
-- SUR-DÉTECTION : l'expert code correct, le modèle voit une erreur.
-  Le modèle invente une faute (lecture trop sévère ou hallucination).
-Les deux se compensent dans l'accord global mais ont des conséquences
-opérationnelles opposées : la sur-correction sous-estime les difficultés des
-élèves, la sur-détection les surestime.
+Convention : « erreur » = code != "1". Deux désaccords aux conséquences opposées :
+SUR-CORRECTION (expert erreur, modèle correct — biais VLM connu) et SUR-DÉTECTION
+(expert correct, modèle erreur).
 """
 
 from __future__ import annotations
@@ -20,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import fsspec
 import pandas as pd
 from sklearn.metrics import cohen_kappa_score, confusion_matrix
 
@@ -29,14 +20,18 @@ from evaluation_dictee.evaluation.statistics import wilson_interval
 def load_predictions(predictions_path: str | Path) -> pd.DataFrame:
     """Charge les prédictions sauvegardées par le benchmark (JSON Lines).
 
+    Accepte un chemin local OU un URI S3 (s3://...) : même accès fsspec que
+    `data/loaders.py`, ce qui permet de lire les prédictions exportées sur S3
+    sans réexécuter le pipeline.
+
     Args:
-        predictions_path: chemin du fichier .jsonl produit par run_benchmark.
+        predictions_path: chemin local ou S3 du JSONL (une prédiction par ligne).
 
     Returns:
-        DataFrame avec colonnes copy_id, item_id, y_true, y_pred, confidence.
+        Un DataFrame, une ligne par item, avec les colonnes du JSONL.
     """
     records = []
-    with open(predictions_path, encoding="utf-8") as f:
+    with fsspec.open(str(predictions_path), "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -48,18 +43,13 @@ def per_item_metrics(df: pd.DataFrame, level: float = 0.95) -> pd.DataFrame:
     """Métriques par item, avec intervalle de Wilson sur l'accord et la prévalence.
 
     Args:
-        df: DataFrame des prédictions.
-        level: niveau de confiance des intervalles.
+        df: prédictions à l'item (colonnes item_id, y_true, y_pred).
+        level: niveau de confiance des intervalles de Wilson.
 
     Returns:
-        DataFrame indexé par item_id :
-        - n, accord, accord_lo, accord_hi (intervalle de Wilson)
-        - kappa (NaN si pas de variance)
-        - pct_erreur_expert / pct_erreur_modele : prévalence d'erreur (%) selon chacun
-        - pct_erreur_expert_lo/hi, pct_erreur_modele_lo/hi : IC Wilson à 95 %
-        - rappel_erreur : parmi les erreurs de l'expert, % retrouvées par le modèle
-        - precision_erreur : parmi les erreurs du modèle, % confirmées par l'expert
-        - n_sur_correction / n_sur_detection : effectifs des deux désaccords
+        Un DataFrame indexé par item_id : accord et son IC, kappa, prévalence
+        d'erreur experte et modèle avec IC, rappel/précision sur l'erreur, et
+        comptes de sur-correction et de sur-détection.
     """
     rows = []
     for item_id, grp in df.groupby("item_id"):
@@ -79,10 +69,9 @@ def per_item_metrics(df: pd.DataFrame, level: float = 0.95) -> pd.DataFrame:
         n_exp_err = int(exp_err.sum())
         n_mod_err = int(mod_err.sum())
         vrais_pos = int((exp_err & mod_err).sum())
-        sur_corr = int((exp_err & ~mod_err).sum())  # expert: erreur, modèle: correct
-        sur_det = int((~exp_err & mod_err).sum())  # expert: correct, modèle: erreur
+        sur_corr = int((exp_err & ~mod_err).sum())
+        sur_det = int((~exp_err & mod_err).sum())
 
-        # Intervalles de Wilson sur la prévalence d'erreur (proportion binomiale)
         ci_exp = wilson_interval(n_exp_err, n, level)
         ci_mod = wilson_interval(n_mod_err, n, level)
 
@@ -112,24 +101,13 @@ def per_item_metrics(df: pd.DataFrame, level: float = 0.95) -> pd.DataFrame:
 def per_copy_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """Métriques par copie : repère les élèves/copies difficiles pour le modèle.
 
-    Le test pilote a montré que les copies d'élèves faibles (plus de fautes,
-    écriture moins normée) sont plus dures à coder. Cette vue le quantifie.
-
     Args:
-        df: DataFrame des prédictions.
+        df: prédictions à l'item (colonnes copy_id, y_true, y_pred, confidence).
 
     Returns:
-        DataFrame indexé par copy_id :
-        - n_items, accord
-        - n_erreurs_expert, n_erreurs_modele : nombre total d'items non corrects
-          (codes 9 ET 0) selon l'expert et le modèle. Sert de proxy du niveau
-          global de la copie.
-        - n_fautes_expert, n_fautes_modele : nombre d'items code 9 (fautes
-          d'orthographe stricto sensu).
-        - n_manquants_expert, n_manquants_modele : nombre d'items code 0
-          (mots oubliés par l'élève).
-        - pct_erreur_expert / pct_erreur_modele : mêmes grandeurs en pourcentage.
-        - confiance_moyenne : confiance moyenne du modèle sur la copie.
+        Un DataFrame indexé par copy_id : effectif, accord, comptes d'erreurs,
+        de fautes (code "9") et de manquants (code "0") côté expert et modèle,
+        prévalences d'erreur et confiance moyenne.
     """
     rows = []
     for copy_id, grp in df.groupby("copy_id"):
@@ -163,14 +141,14 @@ def per_copy_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def disagreement_decomposition(df: pd.DataFrame) -> pd.DataFrame:
-    """Décompose chaque type de désaccord, globalement.
+    """Décompose chaque type de désaccord (transition expert→modèle), globalement.
 
     Args:
-        df: DataFrame des prédictions.
+        df: prédictions à l'item (colonnes y_true, y_pred).
 
     Returns:
-        DataFrame une ligne par type de transition expert→modèle parmi les
-        désaccords, avec effectif et pourcentage du total des désaccords.
+        Un DataFrame trié par fréquence : libellé de la transition, effectif et
+        part parmi les désaccords. Vide s'il n'y a aucun désaccord.
     """
     dis = df[df["y_true"] != df["y_pred"]]
     if len(dis) == 0:
@@ -190,11 +168,11 @@ def confusion_df(df: pd.DataFrame, normalize: bool = False) -> pd.DataFrame:
     """Matrice de confusion globale expert × modèle.
 
     Args:
-        df: DataFrame des prédictions.
-        normalize: si True, normalise chaque ligne (somme = 1).
+        df: prédictions à l'item (colonnes y_true, y_pred).
+        normalize: si True, normalise chaque ligne (expert) pour sommer à 1.
 
     Returns:
-        DataFrame lignes = expert, colonnes = modèle.
+        Un DataFrame carré, lignes préfixées « expert: » et colonnes « modèle: ».
     """
     labels = sorted(set(df["y_true"]) | set(df["y_pred"]))
     matrix = confusion_matrix(df["y_true"], df["y_pred"], labels=labels)
@@ -209,20 +187,14 @@ def confusion_df(df: pd.DataFrame, normalize: bool = False) -> pd.DataFrame:
 
 
 def copies_by_disagreement(df: pd.DataFrame) -> pd.DataFrame:
-    """Table des copies triées par taux de désaccord brut décroissant.
-
-    Outil de diagnostic : les copies en tête sont les plus problématiques et les
-    premières à inspecter visuellement.
+    """Copies triées par taux de désaccord brut décroissant (les pires en tête).
 
     Args:
-        df: DataFrame des prédictions (copy_id, item_id, y_true, y_pred).
+        df: prédictions à l'item (colonnes copy_id, y_true, y_pred).
 
     Returns:
-        DataFrame indexé par copy_id, trié par pct_desaccord décroissant :
-        - n_items : nombre d'items de la copie
-        - n_desaccords : nombre d'items en désaccord
-        - pct_desaccord : taux de désaccord brut (0–100)
-        - accord : taux d'accord (= 100 - pct_desaccord, en proportion)
+        Un DataFrame indexé par copy_id : effectif, nombre et pourcentage de
+        désaccords, accord, trié par pourcentage de désaccord décroissant.
     """
     rows = []
     for copy_id, grp in df.groupby("copy_id"):

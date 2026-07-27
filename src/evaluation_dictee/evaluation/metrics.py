@@ -1,8 +1,4 @@
-"""Métriques de scoring : accord brut, kappa de Cohen, matrice de confusion.
-
-Ces métriques reproduisent celles utilisées dans le test pilote (CLAUDE.md §5).
-On s'appuie sur scikit-learn pour le kappa et la matrice de confusion.
-"""
+"""Métriques de scoring : accord brut, kappa de Cohen, matrice de confusion (CLAUDE.md §5)."""
 
 from __future__ import annotations
 
@@ -13,15 +9,7 @@ from sklearn.metrics import cohen_kappa_score, confusion_matrix
 
 @dataclass
 class ScoringMetrics:
-    """Métriques d'accord entre prédictions et codes experts.
-
-    Attributes:
-        n_items: nombre d'items comparés.
-        raw_agreement: proportion d'items identiques.
-        cohen_kappa: kappa de Cohen (accord corrigé du hasard).
-        labels: liste ordonnée des codes apparaissant.
-        confusion: matrice de confusion (lignes = experts, colonnes = prédictions).
-    """
+    """Métriques d'accord entre prédictions et codes experts."""
 
     n_items: int
     raw_agreement: float
@@ -34,11 +22,12 @@ def compute_scoring_metrics(y_true: list[str], y_pred: list[str]) -> ScoringMetr
     """Calcule les métriques d'accord entre codes experts et codes prédits.
 
     Args:
-        y_true: codes experts (normalisés).
-        y_pred: codes prédits (normalisés, même longueur que y_true).
+        y_true: codes de l'annotateur expert.
+        y_pred: codes prédits par le modèle, alignés item par item sur y_true.
 
     Returns:
-        Les métriques d'accord.
+        Les métriques agrégées (effectif, accord brut, kappa de Cohen, labels
+        et matrice de confusion).
 
     Raises:
         ValueError: si les deux listes n'ont pas la même longueur ou sont vides.

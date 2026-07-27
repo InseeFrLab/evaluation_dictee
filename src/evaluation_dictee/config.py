@@ -1,8 +1,4 @@
-"""Chargement et validation des configurations d'expérience.
-
-Toute la configuration passe par des fichiers YAML (dossier `configs/`) validés
-par Pydantic. Aucun chemin ni paramètre ne doit être codé en dur ailleurs.
-"""
+"""Chargement et validation des configurations d'expérience (YAML validé par Pydantic)."""
 
 from __future__ import annotations
 
@@ -15,10 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Secrets(BaseSettings):
-    """Secrets lus depuis les variables d'environnement (ou le fichier .env).
-
-    Ne contient jamais de valeur en clair dans le code. Voir .env.example.
-    """
+    """Secrets lus depuis les variables d'environnement (ou le fichier .env)."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -26,55 +19,49 @@ class Secrets(BaseSettings):
     aws_secret_access_key: str = ""
     aws_s3_endpoint: str = "minio.lab.sspcloud.fr"
     s3_bucket: str = ""
+    # Répertoire S3 où sont déposées les prédictions finies (JAMAIS dans Git : les
+    # transcriptions sont des données d'élèves mineurs). Sert à relancer notebooks
+    # et site Quarto sans réexécuter le pipeline. Surchargé par S3_PREDICTIONS_PREFIX.
+    s3_predictions_prefix: str = "s3://projet-production-ecrits-depp/predictions"
 
     llm_base_url: str = "https://llm.lab.sspcloud.fr/api/v1"
     llm_api_key: str = "dummy"
-
-    mlflow_tracking_uri: str = ""
 
 
 class ModelConfig(BaseModel):
     """Paramètres du modèle à interroger."""
 
-    # Nom du modèle servi par vLLM (ex: "Qwen/Qwen2.5-VL-7B-Instruct")
-    name: str
-    # "vlm" = modèle multimodal image+texte ; "llm" = texte seul ; "htr" = HTR classique
+    name: str  # nom du modèle servi par vLLM (ex: "Qwen/Qwen2.5-VL-7B-Instruct")
+    # "vlm" = multimodal image+texte ; "llm" = texte seul ; "htr" = HTR classique
     kind: Literal["vlm", "llm", "htr"] = "vlm"
     temperature: float = 0.0
     max_tokens: int = 2048
-    # Demander les log-probabilités pour estimer la confiance par item
-    request_logprobs: bool = True
-    # Nombre de tentatives si la réponse est vide/non parsable (0 = pas de retry).
-    # Une copie restée sans transcription après tous les essais est marquée
-    # "non transcrite" et exclue du calcul des métriques de performance.
+    request_logprobs: bool = True  # log-probs pour estimer la confiance par item
+    # 0 = pas de retry. Copie sans transcription après tous les essais = exclue des métriques.
     max_retries: int = 2
-    # Désactiver le mode « thinking » natif des modèles Qwen3 / DeepSeek-R1.
-    # Ces modèles génèrent par défaut un bloc <think>...</think> avant la réponse,
-    # ce qui casse le parsing JSON et multiplie la latence par 5 à 10.
-    # Mettre à True pour tout modèle thinking : Qwen3-235B-A22B, Qwen3.6-35B-A3B,
-    # QwQ, DeepSeek-R1, etc.
-    # Sans effet sur les modèles classiques (gemma4, Qwen2.5-VL, ...).
+    # Désactive le bloc <think> des modèles thinking (Qwen3, DeepSeek-R1, QwQ) qui casse
+    # le parsing JSON et multiplie la latence. Sans effet sur gemma4, Qwen2.5-VL...
     disable_thinking: bool = True
+    # Force une sortie JSON conforme au schéma (décodage contraint vLLM), supprimant les
+    # copies non parsables. Mettre à False si l'endpoint ne supporte pas json_schema.
+    structured_output: bool = True
 
 
 class DataConfig(BaseModel):
     """Localisation et périmètre des données."""
 
     corpus: Literal["dictee", "production_ecrite"] = "dictee"
-    # Dossier des imagettes. Accepte un chemin local OU un préfixe S3, ex :
-    #   s3://projet-production-ecrits-depp/dictee_2015/
-    images_path: str
-    # Fichier CSV des codes de l'annotateur expert. Comme la dictée n'a qu'un seul
-    # annotateur, ce fichier fait office de vérité de terrain (gold standard).
-    # Accepte un chemin local OU S3, ex :
-    #   s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+    images_path: str  # chemin local OU préfixe S3 (s3://.../dictee_2015/)
+    # CSV des codes experts, faisant office de gold standard (annotateur unique). Local ou S3.
     labels_path: str
-    # Grille de codage au format JSON (versionnée dans configs/). Contient, par
-    # item, le mot attendu et les fautes connues. Sert à construire le prompt et
-    # à fournir le texte de référence (plus besoin d'un fichier .txt séparé).
+    # Grille JSON (versionnée dans configs/) : mot attendu + fautes connues par item.
     grid_path: str = "configs/grille_dictee_2015.json"
-    # Limiter le nombre de copies (utile pour les tests rapides)
-    limit: int | None = None
+    limit: int | None = None  # limiter le nombre de copies (tests rapides)
+    # Seuil de densité d'encre en dessous duquel une copie est jugée VIERGE (l'élève
+    # n'a rien écrit : seul le pré-imprimé marque ~2%). Ces copies sont codées "0"
+    # (absent) sur tous les items, sans appel modèle, identiquement pour toutes les
+    # méthodes — évite que l'end-to-end hallucine la référence. 0 pour désactiver.
+    blank_ink_threshold: float = 0.025
 
 
 class GridConfig(BaseModel):
@@ -91,25 +78,24 @@ class PromptConfig(BaseModel):
     n_few_shot: int = 0  # nombre d'exemples annotés dans le prompt
     enforce_faithful: bool = True  # consigne anti-sur-correction
     read_final_state: bool = True  # règle des ratures : lire l'état final
-    # Chain-of-thought : force le modèle à écrire un champ "comparaison" AVANT
-    # le code, pour verbaliser la différence lue-attendue. Rend le raisonnement
-    # inspectable et réduit les erreurs bien lues mais mal codées (« mis » vs « mit »).
+    # Force un champ "comparaison" avant le code (verbalise la différence lue-attendue).
     chain_of_thought: bool = False
 
 
 class ExperimentConfig(BaseModel):
     """Configuration complète d'une expérience (un fichier YAML = un run)."""
 
-    name: str = Field(..., description="Nom unique du run, utilisé dans MLflow")
+    name: str = Field(..., description="Nom unique du run, utilisé comme nom de trace Langfuse")
     seed: int = 42
-    # Approche d'évaluation :
-    # - "end_to_end" (approche 2) : un VLM lit l'image ET code en une passe.
-    # - "two_stage"  (approche 1) : étape 1 HTR (transcription) puis étape 2
-    #   codage du texte transcrit. Permet d'isoler lecture et jugement.
+    # Nombre de copies évaluées EN PARALLÈLE (le endpoint vLLM batche les requêtes
+    # concurrentes). 1 = séquentiel (ancien comportement). Monter tant que le serveur
+    # suit (débit borné par le GPU) ; redescendre en cas d'erreurs/timeout.
+    concurrency: int = Field(default=8, ge=1)
+    # "end_to_end" : un VLM lit l'image ET code en une passe.
+    # "two_stage" : étape 1 HTR (transcription) puis étape 2 codage (isole lecture/jugement).
     approach: Literal["end_to_end", "two_stage"] = "end_to_end"
     model: ModelConfig
-    # Modèle de l'ÉTAPE 2 (codage textuel) pour l'approche two_stage. Peut être
-    # un modèle texte seul, plus léger. Si absent, on réutilise `model`.
+    # Modèle de l'étape 2 (codage textuel) en two_stage ; si absent, on réutilise `model`.
     model_stage2: ModelConfig | None = None
     data: DataConfig
     grid: GridConfig = GridConfig()
@@ -120,10 +106,10 @@ def load_config(path: str | Path) -> ExperimentConfig:
     """Charge et valide une configuration d'expérience depuis un fichier YAML.
 
     Args:
-        path: chemin vers le fichier YAML.
+        path: Chemin du fichier YAML de configuration.
 
     Returns:
-        La configuration validée.
+        La configuration d'expérience validée.
     """
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
@@ -138,39 +124,31 @@ def load_config(path: str | Path) -> ExperimentConfig:
 class HTRDataConfig(BaseModel):
     """Localisation des données Scoledit pour l'évaluation HTR."""
 
-    # Dossier des images de copies (local ou s3://.../scans/CE1/).
-    scans_path: str
-    # Dossier des transcriptions JSON de référence (local ou s3://.../annotation/CE1/).
-    annotations_path: str
-    # Limiter le nombre d'échantillons (utile pour les tests rapides).
-    limit: int | None = None
+    scans_path: str  # local ou s3://.../scans/CE1/
+    annotations_path: str  # transcriptions JSON de référence, local ou s3://.../annotation/CE1/
+    limit: int | None = None  # limiter le nombre d'échantillons (tests rapides)
 
 
 class HTRExperimentConfig(BaseModel):
-    """Configuration complète d'une expérience de transcription (HTR).
-
-    Volontairement distincte d'`ExperimentConfig` car la structure des données
-    (scans + annotations JSON) et les métriques (CER/WER) diffèrent de celles
-    du codage de dictée. Mêmes principes toutefois : validation Pydantic,
-    un fichier YAML = un run reproductible.
-    """
+    """Configuration d'une expérience HTR : données et métriques (CER/WER) spécifiques."""
 
     name: str = Field(..., description="Nom unique du run.")
     seed: int = 42
+    # Nombre d'échantillons transcrits EN PARALLÈLE (cf. `concurrency` du scoring).
+    concurrency: int = Field(default=8, ge=1)
     model: ModelConfig
     data: HTRDataConfig
-    # Consigne HTR : en cas de rature, lire l'état final (corrigé par l'élève).
-    read_final_state: bool = True
+    read_final_state: bool = True  # en cas de rature, lire l'état final
 
 
 def load_htr_config(path: str | Path) -> HTRExperimentConfig:
     """Charge et valide une configuration HTR depuis un fichier YAML.
 
     Args:
-        path: chemin vers le fichier YAML.
+        path: Chemin du fichier YAML de configuration HTR.
 
     Returns:
-        La configuration HTR validée.
+        La configuration d'expérience HTR validée.
     """
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)

@@ -1,18 +1,7 @@
-"""Ré-alignement des prédictions du modèle sur les items attendus.
+"""Ré-alignement des prédictions sur les items attendus (filet contre décalages mot scindé/collé).
 
-Filet de sécurité contre les décalages : même avec une consigne stricte, le modèle
-peut scinder un mot (« re trouver ») ou en coller deux (« nousles »), ce qui décale
-toutes les prédictions suivantes. Ce module recolle les prédictions du modèle sur
-les items attendus de la grille, en s'appuyant sur les TRANSCRIPTIONS fournies par
-le modèle (ce qu'il dit avoir lu) comparées aux mots attendus.
-
-Principe : alignement de séquences (type Needleman-Wunsch simplifié) entre la suite
-des mots attendus et la suite des transcriptions du modèle. On maximise la
-correspondance mot attendu ↔ transcription, ce qui réabsorbe les insertions
-(mot scindé) et les suppressions (mots collés).
-
-Ce ré-alignement n'est appliqué que si un décalage est détecté ; sinon les
-prédictions positionnelles du modèle sont conservées telles quelles.
+Alignement de séquences (type Needleman-Wunsch) entre mots attendus et transcriptions du modèle,
+appliqué seulement si un décalage est détecté ; sinon les prédictions positionnelles restent.
 """
 
 from __future__ import annotations
@@ -23,23 +12,23 @@ from dataclasses import dataclass
 
 @dataclass
 class AlignedPrediction:
-    """Prédiction d'un item après ré-alignement.
-
-    Attributes:
-        code: code attribué à l'item attendu (1/9/0, ou "?" si non aligné).
-        transcription: transcription rattachée à cet item (peut être None).
-        confidence: confiance associée (peut être None).
-        realigned: True si l'item a été déplacé par le ré-alignement.
-    """
+    """Prédiction d'un item après ré-alignement."""
 
     code: str
     transcription: str | None
     confidence: float | None
-    realigned: bool = False
+    realigned: bool = False  # True si l'item a été déplacé par le ré-alignement
 
 
 def _norm(s: str | None) -> str:
-    """Normalise une chaîne pour la comparaison (minuscule, sans accents/espaces)."""
+    """Normalise une chaîne pour la comparaison (minuscule, sans accents/espaces).
+
+    Args:
+        s: chaîne à normaliser (None traité comme chaîne vide).
+
+    Returns:
+        La chaîne en minuscules, sans accents ni espaces.
+    """
     if not s:
         return ""
     s = unicodedata.normalize("NFKD", s)
@@ -48,7 +37,16 @@ def _norm(s: str | None) -> str:
 
 
 def _similar(attendu: str, lu: str | None) -> float:
-    """Score de similarité simple entre mot attendu et transcription (0..1)."""
+    """Score de similarité simple entre mot attendu et transcription (0..1).
+
+    Args:
+        attendu: mot attendu de l'item.
+        lu: transcription proposée par le modèle (None si absente).
+
+    Returns:
+        Un score dans [0, 1] : 1.0 si identiques après normalisation, 0.8 si l'un
+        inclut l'autre, sinon la proportion de préfixe commun.
+    """
     a, b = _norm(attendu), _norm(lu)
     if not a and not b:
         return 1.0
@@ -73,15 +71,15 @@ def needs_realignment(
     transcriptions: list[str | None],
     seuil: float = 0.5,
 ) -> bool:
-    """Détecte un décalage : la transcription positionnelle colle-t-elle aux mots ?
+    """Détecte un décalage : similarité moyenne transcription/mot attendu sous `seuil`.
 
     Args:
-        expected_words: mots attendus dans l'ordre.
-        transcriptions: transcriptions du modèle, alignées positionnellement.
-        seuil: en dessous de cette similarité moyenne, on suspecte un décalage.
+        expected_words: mots attendus, dans l'ordre des items.
+        transcriptions: transcriptions positionnelles du modèle (None ignorées).
+        seuil: seuil de similarité moyenne sous lequel un décalage est signalé.
 
     Returns:
-        True si un ré-alignement est souhaitable.
+        True si un ré-alignement est nécessaire, False sinon (ou si aucune paire comparable).
     """
     paires = [
         _similar(a, t)
@@ -100,26 +98,21 @@ def realign(
     confidences: list[float | None],
     gap_penalty: float = -0.3,
 ) -> list[AlignedPrediction]:
-    """Ré-aligne les prédictions du modèle sur les mots attendus.
-
-    Alignement de séquences entre `expected_words` et `transcriptions` maximisant
-    la similarité. Chaque mot attendu reçoit le code/transcription du token modèle
-    qui lui correspond le mieux ; les items attendus sans correspondance reçoivent
-    le code "0" (absent, considéré non lu) avec une confiance nulle.
+    """Ré-aligne les prédictions sur les mots attendus (Needleman-Wunsch) ; mot absent codé "0".
 
     Args:
-        expected_words: mots attendus (longueur = nombre d'items de la grille).
-        codes: codes prédits par le modèle (longueur = sortie du modèle).
-        transcriptions: transcriptions du modèle (même longueur que codes).
-        confidences: confiances (même longueur que codes).
-        gap_penalty: pénalité d'insertion/suppression dans l'alignement.
+        expected_words: mots attendus, un par item.
+        codes: codes prédits par le modèle, dans l'ordre de ses tokens.
+        transcriptions: transcriptions correspondant aux codes.
+        confidences: scores de confiance correspondant aux codes.
+        gap_penalty: pénalité appliquée à un saut (mot non lu ou token en trop).
 
     Returns:
-        Une prédiction ré-alignée par mot attendu (longueur = len(expected_words)).
+        Une prédiction alignée par mot attendu ; "0" si le mot n'a pas été lu, "?"
+        en repli si aucune correspondance n'a pu être établie.
     """
     n, m = len(expected_words), len(codes)
-    # Programmation dynamique : score[i][j] = meilleur alignement des i premiers
-    # mots attendus avec les j premières prédictions.
+    # score[i][j] = meilleur alignement des i premiers mots attendus et j premières prédictions.
     score = [[0.0] * (m + 1) for _ in range(n + 1)]
     for i in range(1, n + 1):
         score[i][0] = i * gap_penalty
@@ -159,14 +152,14 @@ def realign(
 
 
 def _alignment_quality(expected_words: list[str], aligned: list[AlignedPrediction]) -> float:
-    """Mesure la qualité d'un alignement : similarité moyenne mot attendu ↔ transcription.
+    """Qualité d'un alignement : similarité moyenne mot attendu / transcription dans [0, 1].
 
     Args:
-        expected_words: mots attendus.
-        aligned: prédictions alignées (même longueur).
+        expected_words: mots attendus, un par item.
+        aligned: prédictions alignées à évaluer.
 
     Returns:
-        Similarité moyenne dans [0, 1]. Plus c'est haut, meilleur est l'alignement.
+        La similarité moyenne dans [0, 1] (0.0 si la liste est vide).
     """
     sims = [_similar(w, a.transcription) for w, a in zip(expected_words, aligned, strict=False)]
     return sum(sims) / len(sims) if sims else 0.0
@@ -178,23 +171,19 @@ def realign_anchored(
     transcriptions: list[str | None],
     confidences: list[float | None],
 ) -> list[AlignedPrediction]:
-    """Stratégie d'alignement par ancrage sur les correspondances exactes.
+    """Alignement par ancrage sur les correspondances exactes uniques, réparti entre les ancres.
 
-    Complémentaire de `realign` (Needleman-Wunsch global). On repère d'abord les
-    « ancres » : positions où un mot attendu et une transcription coïncident
-    exactement et de façon unique. Entre deux ancres, on répartit les prédictions
-    proportionnellement. Cette approche est robuste quand quelques mots très
-    distinctifs (ex. « Martine », « téléphoner ») jalonnent la dictée et limitent
-    la propagation d'un décalage local.
+    Complémentaire de `realign` ; robuste quand des mots distinctifs jalonnent la dictée.
 
     Args:
-        expected_words: mots attendus.
-        codes: codes prédits (ordre modèle).
-        transcriptions: transcriptions (ordre modèle).
-        confidences: confiances (ordre modèle).
+        expected_words: mots attendus, un par item.
+        codes: codes prédits par le modèle, dans l'ordre de ses tokens.
+        transcriptions: transcriptions correspondant aux codes.
+        confidences: scores de confiance correspondant aux codes.
 
     Returns:
-        Une prédiction par mot attendu.
+        Une prédiction alignée par mot attendu ; "0" si le mot n'a pas été lu, "?"
+        en repli si aucune correspondance n'a pu être établie.
     """
     n = len(expected_words)
     m = len(codes)
@@ -243,20 +232,16 @@ def best_realignment(
     transcriptions: list[str | None],
     confidences: list[float | None],
 ) -> list[AlignedPrediction]:
-    """Choisit la meilleure des stratégies d'alignement disponibles.
-
-    Applique plusieurs approches (Needleman-Wunsch global et ancrage) et retient
-    celle dont l'alignement colle le mieux aux mots attendus. Combine ainsi les
-    forces de chacune pour rattraper un maximum de cas de décalage.
+    """Applique Needleman-Wunsch et ancrage, garde l'alignement le plus proche des mots attendus.
 
     Args:
-        expected_words: mots attendus.
-        codes: codes prédits (ordre modèle).
-        transcriptions: transcriptions (ordre modèle).
-        confidences: confiances (ordre modèle).
+        expected_words: mots attendus, un par item.
+        codes: codes prédits par le modèle, dans l'ordre de ses tokens.
+        transcriptions: transcriptions correspondant aux codes.
+        confidences: scores de confiance correspondant aux codes.
 
     Returns:
-        Le meilleur alignement (une prédiction par mot attendu).
+        L'alignement (parmi `realign` et `realign_anchored`) de meilleure qualité.
     """
     candidats = [
         realign(expected_words, codes, transcriptions, confidences),

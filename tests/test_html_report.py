@@ -43,7 +43,6 @@ def test_filter_keeps_header_cells(tmp_path: Path) -> None:
     filtered = _filter_by_sections(nb, ["section:b"])
     # 1 cellule d'en-tête + 2 cellules pour section B = 3
     assert len(filtered.cells) == 3
-    # La 1re cellule (imports) est toujours là
     assert "import pandas" in "".join(filtered.cells[0].source)
 
 
@@ -82,6 +81,5 @@ def test_bootstrap_prevalence_ci_shape() -> None:
     assert set(ci.columns) == {"estimate", "lo", "hi"}
     # L'estimation de la prévalence sur i0 est 100 % (tous à "9")
     assert ci.loc["i0", "estimate"] == 100.0
-    # IC toujours [lo, hi] avec lo <= estimate <= hi
     for it in ci.index:
         assert ci.loc[it, "lo"] <= ci.loc[it, "estimate"] <= ci.loc[it, "hi"]

@@ -1,15 +1,8 @@
-"""Outils statistiques pour une évaluation rigoureuse.
+"""Intervalle de Wilson (proportions) et bootstrap par grappes.
 
-Deux outils principaux :
-
-1. **Intervalle de Wilson** pour les proportions (accord par item). Plus fiable
-   que l'intervalle normal quand n est petit ou la proportion proche de 0/1.
-
-2. **Bootstrap par grappes (cluster bootstrap)** pour les métriques globales.
-   Point méthodologique important : les 83 items d'une même copie ne sont PAS
-   indépendants (même élève, même écriture, même niveau). Un bootstrap naïf
-   par item sous-estimerait l'incertitude. On rééchantillonne donc les COPIES
-   entières, pas les items.
+Le bootstrap rééchantillonne les COPIES entières, pas les items : les 83 items
+d'une copie ne sont pas indépendants, un bootstrap par item sous-estimerait
+l'incertitude.
 """
 
 from __future__ import annotations
@@ -24,14 +17,7 @@ import pandas as pd
 
 @dataclass
 class ConfidenceInterval:
-    """Un intervalle de confiance avec sa valeur ponctuelle.
-
-    Attributes:
-        estimate: valeur observée.
-        lower: borne inférieure.
-        upper: borne supérieure.
-        level: niveau de confiance (ex. 0.95).
-    """
+    """Un intervalle de confiance avec sa valeur ponctuelle."""
 
     estimate: float
     lower: float
@@ -43,15 +29,15 @@ def wilson_interval(successes: int, n: int, level: float = 0.95) -> ConfidenceIn
     """Intervalle de Wilson pour une proportion.
 
     Args:
-        successes: nombre de succès (ex. items en accord).
-        n: nombre total d'essais.
-        level: niveau de confiance.
+        successes: nombre de succès observés.
+        n: nombre total d'observations.
+        level: niveau de confiance (0.90, 0.95 ou 0.99 ; sinon 0.95 par défaut).
 
     Returns:
-        L'intervalle (estimate = proportion observée).
+        L'intervalle de confiance avec sa proportion ponctuelle, borné à [0, 1].
 
     Raises:
-        ValueError: si n == 0.
+        ValueError: si n vaut 0.
     """
     if n == 0:
         raise ValueError("n doit être > 0.")
@@ -76,16 +62,16 @@ def cluster_bootstrap(
     """Bootstrap par grappes : rééchantillonne les copies, pas les items.
 
     Args:
-        df: DataFrame des prédictions (une ligne par item × copie).
-        metric_fn: fonction qui calcule la métrique sur un DataFrame
-            (ex. lambda d: cohen_kappa_score(d["y_true"], d["y_pred"])).
-        cluster_col: colonne identifiant la grappe (la copie).
-        n_boot: nombre de rééchantillonnages.
-        level: niveau de confiance.
-        seed: graine aléatoire pour la reproductibilité.
+        df: données à l'item, avec une colonne identifiant la grappe.
+        metric_fn: fonction calculant la métrique scalaire sur un DataFrame.
+        cluster_col: colonne servant de grappe (copie) pour le rééchantillonnage.
+        n_boot: nombre de tirages bootstrap.
+        level: niveau de confiance de l'intervalle.
+        seed: graine du générateur aléatoire (reproductibilité).
 
     Returns:
-        Intervalle percentile autour de la métrique observée.
+        L'intervalle de confiance : estimation sur df complet et bornes issues
+        des quantiles de la distribution bootstrap.
     """
     rng = np.random.default_rng(seed)
     clusters = df[cluster_col].unique()

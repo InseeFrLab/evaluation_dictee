@@ -1,0 +1,52 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — MÉTHODE B (two-stage : transcription puis codage)
+# ═══════════════════════════════════════════════════════════════════════════
+#  Étape 1 : un VLM transcrit l'image (raw_transcription).
+#  Étape 2 : un LLM texte code chaque item à partir de la transcription + grille.
+#  Dérivé de dictee_REFERENCE.yaml : voir ce fichier pour la doc exhaustive de
+#  chaque paramètre (les champs omis reprennent leur valeur par défaut).
+#
+#  Lancer : uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml
+#  Sortie  : data/processed/dictee_two_stage_predictions.jsonl  (approach="two_stage")
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: dictee_two_stage
+seed: 42
+concurrency: 8
+
+approach: two_stage
+
+# Étape 1 = transcription (doit être multimodal pour lire l'image).
+model:
+  name: gemma4-26b-moe
+  kind: vlm
+  temperature: 0.0
+  max_tokens: 8192
+  request_logprobs: true
+  max_retries: 2
+  disable_thinking: true
+  structured_output: true
+
+# Étape 2 = codage textuel (modèle texte seul, obligatoire en two_stage).
+model_stage2:
+  name: gemma4-26b-moe
+  kind: llm
+  temperature: 0.0
+  max_tokens: 8192
+
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: B
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  chain_of_thought: false

@@ -36,14 +36,13 @@ def test_accuracy_by_position_detecte_degradation() -> None:
     # Désaccords concentrés en fin → accord doit chuter avec la position
     df = _df("c1", faux_positions={6, 7, 8, 9})
     tab = accuracy_by_position(df, ITEMS, n_bins=5)
-    # La dernière tranche doit avoir un accord plus faible que la première
     assert tab.iloc[-1]["accord"] < tab.iloc[0]["accord"]
 
 
 def test_correlation_negative_si_fin_degradee() -> None:
     df = _df("c1", faux_positions={6, 7, 8, 9})
     corr = position_accuracy_correlation(df, ITEMS)
-    assert corr < 0  # plus on avance, moins c'est juste
+    assert corr < 0
 
 
 def test_longest_run_detecte_sequence_consecutive() -> None:
@@ -90,7 +89,6 @@ def test_hotspots_renvoie_les_palmares() -> None:
         "plus_forte_chute",
         "sur_confiance",
     }
-    # La pire copie doit être en tête du palmarès d'accord
     assert hot["pire_accord"].index[0] == "mauvaise"
 
 
@@ -104,9 +102,7 @@ def test_omission_decale_et_detruit_la_fin() -> None:
     res_fin = simulate_word_omission_shift(expert, omission_position=18)
 
     assert res_debut["accord_sans_decalage"] == 1.0
-    # Décalage précoce : l'accord s'effondre largement
     assert res_debut["accord_avec_decalage"] < 0.6
-    # Décalage tardif : peu d'items affectés, accord reste élevé
     assert res_fin["accord_avec_decalage"] > res_debut["accord_avec_decalage"]
 
 

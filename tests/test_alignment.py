@@ -31,7 +31,6 @@ def test_realign_recolle_sur_mots_attendus() -> None:
     conf = [0.9, 0.9, 0.9, 0.9]
     aligned = realign(attendus, codes, trans, conf)
     assert len(aligned) == len(attendus)
-    # Le 1er item reste « nous »
     assert aligned[0].transcription == "nous"
 
 
@@ -42,7 +41,6 @@ def test_realign_longueur_toujours_egale_aux_attendus() -> None:
     conf = [1.0, 1.0, 1.0]
     aligned = realign(attendus, codes, trans, conf)
     assert len(aligned) == 5
-    # Les items sans correspondance sont marqués absents
     assert aligned[-1].code in {"0", "?"}
 
 
@@ -100,7 +98,6 @@ def test_realign_anchored_utilise_les_ancres() -> None:
     conf = [0.9] * 5
     aligned = realign_anchored(attendus, codes, trans, conf)
     assert len(aligned) == 4
-    # L'ancre Martine doit être correctement placée
     i_martine = attendus.index("Martine")
     assert aligned[i_martine].transcription == "Martine"
 

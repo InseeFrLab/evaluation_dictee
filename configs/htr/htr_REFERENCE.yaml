@@ -1,0 +1,45 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIG DE RÉFÉRENCE — évaluation de la TRANSCRIPTION (HTR) sur Scoledit
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#  Mesure la fidélité de lecture d'un modèle (CER/WER), indépendamment du codage.
+#  Ce fichier documente TOUS les champs lus. Sert de MODÈLE À COPIER : duplique-le,
+#  renomme `name`, ajuste `model.name` et les chemins, et lance.
+#
+#  ⚠ Ce script lit le YAML comme un simple dictionnaire (pas via ExperimentConfig).
+#     Les clés de `data` sont donc `scans_dir` / `annotations_dir` (et NON `*_path`).
+#     Seul le bloc `model` est validé par le schéma ModelConfig.
+#
+#  Lancer :  uv run scripts/run_htr_benchmark.py --config configs/htr/<fichier>.yaml
+#  Voir configs/README.md pour la logique d'ensemble.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Nom UNIQUE du run (préfixe des fichiers de sortie). REQUIS.
+name: htr_REFERENCE
+
+# Nombre d'échantillons transcrits EN PARALLÈLE (le endpoint vLLM batche les
+# requêtes concurrentes). Principal levier de temps mural. [défaut : 8]
+# 1 = séquentiel. Monter si le serveur tient, redescendre en cas de timeouts.
+concurrency: 8
+
+# ── Modèle de transcription ─────────────────────────────────────────────────
+# Validé par ModelConfig, mais l'HTR n'exploite QUE les champs ci-dessous
+# (la sortie est du texte libre, pas du JSON) :
+model:
+  name: gemma4-26b-moe        # ← seul champ à changer pour tester un autre VLM
+  kind: vlm                   # doit être multimodal pour lire l'image
+  temperature: 0.0            # 0 = déterministe
+  max_tokens: 2048            # une transcription est courte ; 2048 suffit
+  max_retries: 2              # essais si la réponse est vide
+  # Les autres champs ModelConfig (request_logprobs, disable_thinking,
+  # structured_output) sont acceptés mais SANS EFFET en transcription.
+
+# ── Données Scoledit ────────────────────────────────────────────────────────
+# ⚠ clés `scans_dir` / `annotations_dir` (pas `*_path`). Local ou s3://.
+data:
+  scans_dir:       s3://projet-production-ecrits-depp/scoledit/scans/CE1/
+  annotations_dir: s3://projet-production-ecrits-depp/scoledit/annotation/CE1/
+  limit: 10                   # nb d'échantillons ; null = tout le corpus
+
+# Règle des ratures : lire l'état FINAL (version corrigée par l'élève). [défaut : true]
+read_final_state: true

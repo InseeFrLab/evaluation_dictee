@@ -1,15 +1,7 @@
-"""Chargement du corpus Scoledit pour l'évaluation de la transcription (HTR).
+"""Chargement du corpus Scoledit (HTR) : appariement scans + annotations TEI.
 
-Structure des données (sur S3) :
-  scans/<niveau>/<scan>.jpg          image de la copie (ex. 100a.jpg)
-  annotation/<niveau>/<scan>.json    transcription de référence, ex. :
-      {"student_id": 100, "level": "CE1", "scan": "100a",
-       "tei": "<p>il était tune fois un chat <lb/> pérsent...</p>"}
-
-La transcription de référence est en TEI léger : balise <p> englobante et <lb/>
-pour les retours à la ligne. On la nettoie en texte brut (les <lb/> deviennent des
-espaces) tout en PRÉSERVANT les fautes d'orthographe de l'élève, qui sont l'objet
-même de l'évaluation.
+La référence TEI est nettoyée en texte brut en PRÉSERVANT les fautes de l'élève,
+qui sont l'objet même de l'évaluation.
 """
 
 from __future__ import annotations
@@ -23,16 +15,7 @@ import fsspec
 
 @dataclass
 class ScoledtSample:
-    """Un échantillon Scoledit : image + transcription de référence.
-
-    Attributes:
-        scan: identifiant du scan (ex. "100a").
-        level: niveau scolaire (ex. "CE1").
-        student_id: identifiant de l'élève.
-        image_path: chemin de l'image (local ou s3://).
-        reference: transcription de référence en texte brut (fautes préservées).
-        tei_raw: transcription TEI brute (pour référence/débogage).
-    """
+    """Un échantillon Scoledit : image + transcription de référence."""
 
     scan: str
     level: str
@@ -43,28 +26,30 @@ class ScoledtSample:
 
 
 def tei_to_text(tei: str) -> str:
-    """Convertit une transcription TEI légère Scoledit en texte brut.
-
-    Règles :
-    - <lb/> (saut de ligne) → espace ;
-    - balises englobantes <p>...</p> retirées ;
-    - toute autre balise retirée ;
-    - espaces multiples réduits, texte découpé/recollé proprement.
-    Les fautes d'orthographe de l'élève sont conservées telles quelles.
+    """Convertit une transcription TEI légère Scoledit en texte brut (fautes préservées).
 
     Args:
-        tei: chaîne TEI (ex. "<p>il était tune fois <lb/> un chat</p>").
+        tei: Transcription au format TEI léger.
 
     Returns:
-        Le texte brut correspondant.
+        Texte brut, balises retirées et espaces normalisés.
     """
     txt = tei.replace("<lb/>", " ")
-    txt = re.sub(r"<[^>]+>", " ", txt)  # retire toute balise restante
-    txt = re.sub(r"\s+", " ", txt)  # espaces multiples → un seul
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = re.sub(r"\s+", " ", txt)
     return txt.strip()
 
 
 def _join(base: str, name: str) -> str:
+    """Concatène un chemin de base et un nom avec un unique séparateur.
+
+    Args:
+        base: Chemin de base.
+        name: Nom à ajouter.
+
+    Returns:
+        Chemin joint.
+    """
     return base.rstrip("/") + "/" + name
 
 
@@ -76,12 +61,12 @@ def load_scoledit_dataset(
     """Charge les échantillons Scoledit en appariant scans et annotations.
 
     Args:
-        scans_dir: dossier des images (local ou s3://.../scans/CE1/).
-        annotations_dir: dossier des JSON (local ou s3://.../annotation/CE1/).
-        limit: nombre maximal d'échantillons (None = tous).
+        scans_dir: Dossier des images numérisées.
+        annotations_dir: Dossier des annotations JSON (champs scan, level, tei...).
+        limit: Nombre maximal d'échantillons à charger (tous si None).
 
     Returns:
-        Liste de ScoledtSample, ordonnée par nom de scan.
+        Liste des échantillons appariés.
     """
     fs, _, paths = fsspec.get_fs_token_paths(annotations_dir.rstrip("/") + "/*")
     json_files = sorted(p for p in fs.glob(annotations_dir.rstrip("/") + "/*.json"))
@@ -108,7 +93,15 @@ def load_scoledit_dataset(
 
 
 def _scheme_prefix(reference_dir: str, path: str) -> str:
-    """Restaure le préfixe s3:// perdu par fs.glob quand la source est S3."""
+    """Restaure le préfixe s3:// perdu par fs.glob quand la source est S3.
+
+    Args:
+        reference_dir: Dossier de référence indiquant le schéma d'origine.
+        path: Chemin retourné par glob, éventuellement sans préfixe.
+
+    Returns:
+        Chemin préfixé de s3:// si nécessaire, sinon inchangé.
+    """
     if reference_dir.startswith("s3://") and not path.startswith("s3://"):
         return "s3://" + path
     return path

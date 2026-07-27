@@ -1,0 +1,119 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIG DE RÉFÉRENCE — scoring de la dictée (méthode C, end-to-end)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#  Ce fichier documente TOUS les paramètres disponibles, avec leurs valeurs
+#  possibles et leurs valeurs par défaut. Il est volontairement exhaustif et
+#  sert de MODÈLE À COPIER : pour une nouvelle expérience, duplique-le, renomme
+#  le fichier + le champ `name`, et ne garde que les champs que tu changes
+#  (tout champ omis reprend sa valeur par défaut, indiquée ici entre crochets).
+#
+#  Schéma de validation : ExperimentConfig (src/evaluation_dictee/config.py).
+#  Lancer :   uv run scripts/run_benchmark.py --config configs/scoring/<fichier>.yaml
+#
+#  Voir configs/README.md pour la logique d'ensemble.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Nom UNIQUE du run. Sert à la fois de nom de session Langfuse et de préfixe des
+# fichiers de sortie (data/processed/<name>_predictions.jsonl). Deux runs de même
+# nom partagent le checkpoint : changer le nom pour repartir de zéro.
+# Convention : dictee_<modele>_<variante>  (ex. dictee_gemma4_zeroshot).
+name: dictee_REFERENCE
+
+# Graine aléatoire, pour la reproductibilité.               [défaut : 42]
+seed: 42
+
+# Nombre de copies évaluées EN PARALLÈLE.                   [défaut : 8]
+# Le endpoint vLLM batche les requêtes concurrentes : passer de 1 (séquentiel) à N
+# divise le temps mural tant que le serveur suit (débit borné par le GPU). Monter
+# (16, 32…) si l'endpoint tient ; redescendre en cas de timeouts / 429. 1 = ancien
+# comportement séquentiel.
+concurrency: 8
+
+# Approche d'évaluation :                                   [défaut : end_to_end]
+#   end_to_end : un VLM lit l'image ET code en une seule passe (méthode C).
+#   two_stage  : étape 1 = transcription (HTR), étape 2 = codage du texte.
+#                two_stage exige le bloc `model_stage2` ci-dessous.
+approach: end_to_end
+
+# ── Modèle (étape unique en end_to_end, ou étape 1 = HTR en two_stage) ────────
+model:
+  # Nom EXACT du modèle tel que servi par vLLM / affiché sur llm.lab.sspcloud.fr.
+  name: gemma4-26b-moe
+  # Modalité attendue :                                     [défaut : vlm]
+  #   vlm = image + texte (obligatoire pour lire l'image en méthode C) ;
+  #   llm = texte seul (utile pour l'étape 2 du two_stage) ; htr = HTR classique.
+  kind: vlm
+  # Température d'échantillonnage. 0.0 = déterministe, recommandé.  [défaut : 0.0]
+  temperature: 0.0
+  # Plafond de tokens générés. 83 items en JSON ⇒ prévoir de la marge pour éviter
+  # une troncature (finish_reason=length). 8192 convient ; +CoT ⇒ garder 8192.
+  max_tokens: 8192                                        # [défaut : 2048]
+  # Demander les log-probs (sert à estimer la confiance par item). [défaut : true]
+  request_logprobs: true
+  # Nombre de tentatives si la réponse est vide/non parsable (0 = aucun retry).
+  # Après épuisement, la copie est marquée « non transcrite » et exclue des
+  # métriques de performance.                                [défaut : 2]
+  max_retries: 2
+  # Désactiver le mode « thinking » natif (bloc <think>...</think>) des modèles
+  # Qwen3 / DeepSeek-R1 / QwQ : sinon le JSON est cassé et la latence explose.
+  # OBLIGATOIRE pour tout modèle thinking ; sans effet sur gemma4/Qwen2.5-VL.
+  disable_thinking: true                                  # [défaut : true]
+  # Forcer une sortie JSON conforme au schéma (décodage contraint de vLLM,
+  # response_format json_schema). Le modèle ne peut PAS produire de texte hors
+  # JSON (note, commentaire) → supprime les « non transcrites » dues au parsing.
+  # Mettre à false seulement si l'endpoint ne supporte pas json_schema. [défaut : true]
+  structured_output: true
+
+# ── Modèle de l'ÉTAPE 2 (codage textuel), UNIQUEMENT si approach: two_stage ───
+# Peut être un modèle texte seul (kind: llm), plus léger que l'étape 1.
+# Omettre ce bloc en end_to_end (ou réutilise `model` si absent en two_stage).
+model_stage2:
+  name: gemma4-26b-moe
+  kind: llm
+  temperature: 0.0
+  max_tokens: 8192
+
+# ── Données ───────────────────────────────────────────────────────────────
+data:
+  # Corpus visé :                                           [défaut : dictee]
+  #   dictee (texte de référence connu) ou production_ecrite (libre).
+  corpus: dictee
+  # Dossier des imagettes. Chemin local OU préfixe S3.
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  # CSV des codes de l'annotateur expert (vérité de terrain). Local ou S3.
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  # Grille de codage JSON (mot attendu + fautes connues par item). Versionnée
+  # dans le dépôt ; chemin relatif à la racine du projet.  [défaut : celui-ci]
+  grid_path: configs/grille_dictee_2015.json
+  # Nombre de copies à traiter. null = tout le corpus.     [défaut : null]
+  # Commencer petit (5–20) pour valider la chaîne, puis passer à null.
+  limit: null
+
+# ── Grille de codage ────────────────────────────────────────────────────────
+grid:
+  # Jeu de modalités des codes :                            [défaut : simplifiee]
+  #   simplifiee : 1 / erreur / 0   (3+4+5 regroupés en « erreur ») — CIBLE.
+  #   complete   : 1 / 3 / 4 / 5 / 9 / 0 (distingue lexical/grammatical/mixte).
+  # Le modèle ET les codes experts sont ramenés au MÊME jeu, automatiquement.
+  scheme: simplifiee
+
+# ── Stratégie de prompting ────────────────────────────────────────────────
+prompt:
+  # Méthode d'évaluation :                                  [défaut : C]
+  #   A = HTR classique → LLM texte ; B = VLM transcrit → LLM texte ;
+  #   C = end-to-end (image+référence+grille → codes) — PRIVILÉGIÉE ;
+  #   D = fine-tuning (phase ultérieure).
+  method: C
+  # Nombre d'exemples annotés injectés dans le prompt (few-shot). [défaut : 0]
+  n_few_shot: 0
+  # Consigne anti-sur-correction : interdit au modèle de « corriger »
+  # silencieusement ce que l'élève a écrit.                 [défaut : true]
+  enforce_faithful: true
+  # Règle des ratures (tranchée par la DEPP) : lire l'état FINAL,
+  # c.-à-d. la version corrigée par l'élève.                [défaut : true]
+  read_final_state: true
+  # Chain-of-thought : force un champ « comparaison » (différence lue↔attendue)
+  # AVANT le code. Rend le raisonnement inspectable, réduit les erreurs bien
+  # lues mais mal codées (« mis » vs « mit »). Coûte des tokens.  [défaut : false]
+  chain_of_thought: false

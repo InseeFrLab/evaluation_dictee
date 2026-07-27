@@ -1,47 +1,34 @@
-"""Orchestration d'un run de benchmark : données → modèle → métriques.
+"""Orchestration d'un run de benchmark : données -> modèle -> métriques, via `ExperimentConfig`.
 
-Ce module est le cœur du projet. Il enchaîne le chargement des données, l'appel
-au modèle copie par copie, la normalisation des codes selon le schéma choisi, et
-le calcul des métriques. Tout est piloté par une `ExperimentConfig`.
-
-Les prédictions détaillées (une ligne JSON par item × copie) sont sauvegardées dans
-data/processed/<run_name>_predictions.jsonl pour analyse ultérieure via
-evaluation/report.py et le notebook 03_analyse_resultats.ipynb.
+Prédictions écrites dans data/processed/<run_name>_predictions.jsonl (une ligne par item x copie).
 """
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from tqdm import tqdm
 
 from evaluation_dictee.config import ExperimentConfig
-from evaluation_dictee.data import grid
-from evaluation_dictee.data.loaders import Copy, load_dataset
-from evaluation_dictee.data.reference import load_grid
+from evaluation_dictee.data import reference
+from evaluation_dictee.data.grid import load_grid
+from evaluation_dictee.data.loaders import Copy, ink_ratio, load_dataset, load_image
 from evaluation_dictee.evaluation.metrics import ScoringMetrics, compute_scoring_metrics
-from evaluation_dictee.models.base import Scorer
+from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
 from evaluation_dictee.utils.logging import get_logger
+from evaluation_dictee.utils.tracking import copy_trace
 
 logger = get_logger(__name__)
 
 
 @dataclass
 class BenchmarkResult:
-    """Résultat d'un run : métriques + prédictions et labels alignés.
-
-    Attributes:
-        metrics: métriques globales (accord, kappa...).
-        y_true: codes experts normalisés, aplatis (toutes copies × tous items).
-        y_pred: codes prédits normalisés, alignés sur y_true.
-        confidences: confiance par item (None si indisponible).
-        item_ids: identifiant de l'item pour chaque position (pour l'analyse/item).
-        copy_ids: identifiant de la copie pour chaque position.
-        predictions_path: chemin du fichier JSONL sauvegardé (None si non sauvegardé).
-    """
+    """Résultat d'un run : métriques + prédictions/labels alignés (y_true/y_pred aplatis)."""
 
     metrics: ScoringMetrics
     y_true: list[str]
@@ -51,20 +38,29 @@ class BenchmarkResult:
     copy_ids: list[str] = field(default_factory=list)
     predictions_path: Path | None = None
     non_transcribed: list[str] = field(default_factory=list)
+    blank_copies: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _CopyOutcome:
+    """Résultat du scoring d'une copie, produit par un worker et consommé au principal."""
+
+    copy_id: str
+    status: str  # "ok" | "failed" | "non_transcribed"
+    lines: str = ""  # lignes JSONL prêtes à écrire (status "ok")
+    error: str = ""  # message d'erreur (status "failed")
+    n_attempts: int = 1  # nombre d'essais (status "non_transcribed")
+    blank: bool = False  # copie vierge auto-codée "0" (status "ok")
 
 
 def _load_processed_copy_ids(predictions_path: Path) -> set[str]:
-    """Lit un fichier de prédictions existant et renvoie les copy_id déjà traités.
-
-    Permet de reprendre un run interrompu : on saute les copies déjà présentes
-    dans le fichier `<run>_predictions.jsonl`. Fichier corrompu (dernière ligne
-    tronquée par un crash) : on ignore silencieusement la dernière ligne.
+    """Renvoie les copy_id déjà présents dans un fichier de prédictions (pour reprendre un run).
 
     Args:
         predictions_path: chemin du fichier JSONL de prédictions.
 
     Returns:
-        Ensemble des copy_id déjà présents dans le fichier.
+        L'ensemble des copy_id déjà traités (vide si le fichier n'existe pas).
     """
     if not predictions_path.exists():
         return set()
@@ -78,7 +74,7 @@ def _load_processed_copy_ids(predictions_path: Path) -> set[str]:
                 rec = json.loads(line)
                 processed.add(rec["copy_id"])
             except (json.JSONDecodeError, KeyError):
-                # Ligne tronquée par un crash : on la laisse tomber
+                # Ligne tronquée par un crash : ignorée.
                 continue
     return processed
 
@@ -87,26 +83,31 @@ def run_benchmark(
     config: ExperimentConfig,
     scorer: Scorer,
     output_dir: str | Path = "data/processed",
+    concurrency: int | None = None,
 ) -> BenchmarkResult:
     """Exécute un benchmark complet pour une config et un modèle donnés.
 
-    Écriture incrémentale : chaque copie évaluée est immédiatement `fsync`-ée
-    dans le JSONL, donc un crash à mi-chemin ne perd que la copie en cours.
-    Reprise automatique : si un `<run>_predictions.jsonl` existe déjà, les
-    copies déjà traitées sont sautées. Pour repartir de zéro, supprimer le
-    fichier ou changer `config.name`.
+    Écriture incrémentale (fsync par copie) + reprise auto depuis le JSONL existant ;
+    une erreur API sur une copie est loggée dans failed_copies.txt et le run continue.
+    Pour repartir de zéro : supprimer le JSONL ou changer `config.name`.
 
-    Erreurs API transitoires : chaque échec sur une copie est loggé et la
-    copie est marquée dans `failed_copies.txt`, mais le run continue sur les
-    suivantes. Sans ça, un incident réseau à 30 % perdait 8 h de calcul.
+    Les copies sont évaluées en parallèle (`concurrency` requêtes vLLM concurrentes) :
+    seul le scoring est parallélisé, l'écriture du JSONL et l'agrégation restent dans
+    le thread principal (aucun verrou, crash-safety et reprise inchangées).
 
     Args:
-        config: configuration de l'expérience.
-        scorer: modèle implémentant l'interface Scorer.
-        output_dir: dossier où sauvegarder le fichier de prédictions détaillées.
+        config: configuration de l'expérience (données, grille, nom du run).
+        scorer: modèle chargé de coder chaque copie.
+        output_dir: dossier où écrire les prédictions et les fichiers d'échec.
+        concurrency: nombre de copies évaluées en parallèle ; None = valeur de la
+            config (`config.concurrency`).
 
     Returns:
-        Les métriques et les vecteurs alignés (vrais codes, prédictions, confiances).
+        Le résultat du run : métriques agrégées, labels/prédictions alignés et
+        chemin du fichier de prédictions.
+
+    Raises:
+        RuntimeError: si aucune copie n'a pu être chargée.
     """
     logger.info("Labels : %s", config.data.labels_path)
     logger.info("Images : %s", config.data.images_path)
@@ -125,13 +126,12 @@ def run_benchmark(
             f"  2. Les images sont introuvables : {config.data.images_path}\n"
             "     (les noms dans le CSV doivent correspondre aux fichiers du dossier)\n"
             "  3. Les identifiants S3 ne sont pas configurés.\n"
-            'Diagnostic : python -c "'
+            'Diagnostic : uv run python -c "'
             "from evaluation_dictee.data.loaders import load_labels; "
             f"labels=load_labels('{config.data.labels_path}'); "
             "print(len(labels), 'copies dans le CSV')\""
         )
 
-    # Reprise éventuelle depuis un checkpoint
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"{config.name}_predictions.jsonl"
@@ -152,63 +152,145 @@ def run_benchmark(
         len(processed),
     )
 
-    reference = load_grid(config.data.grid_path).reference_text
+    reference_text = load_grid(config.data.grid_path).reference_text
     scheme = config.grid.scheme
+    workers = concurrency if concurrency is not None else config.concurrency
+    blank_threshold = config.data.blank_ink_threshold
 
     non_transcrites: list[str] = []
     failed_copies: list[tuple[str, str]] = []  # (copy_id, message d'erreur)
+    blank_copies: list[str] = []  # copies vierges auto-codées "0"
 
-    # Ouverture en mode APPEND : les copies précédemment traitées sont conservées.
-    with open(out_path, "a", encoding="utf-8") as f_pred:
-        for copy in tqdm(copies_a_traiter, desc=f"Évaluation ({config.name})"):
-            # Chaque copie est isolée dans un try/except : une erreur API sur
-            # UNE copie ne fait plus perdre les précédentes.
+    def _score_one(copy: Copy) -> _CopyOutcome:
+        """Score une copie et prépare ses lignes JSONL (exécuté dans un thread worker).
+
+        Aucune écriture fichier ni mutation d'état partagé ici : uniquement l'appel
+        modèle (thread-safe) et la trace Langfuse de la copie. Le résultat est
+        consommé dans le thread principal.
+        """
+        # Une trace Langfuse par copie (no-op si Langfuse indisponible, trace vaut None).
+        with copy_trace(copy) as trace:
+            # Détection copie vierge AVANT tout appel modèle : formulaire non rempli
+            # (seul le pré-imprimé marque quelques % d'encre). Traitée identiquement
+            # pour toutes les méthodes → tous les items codés "0" (absent), sans appel
+            # modèle. Empêche l'end-to-end d'halluciner la référence sur une page vide.
             try:
-                prediction = scorer.score_copy(copy, reference)
-            except Exception as exc:  # noqa: BLE001 — on veut TOUT rattraper ici
-                logger.error(
-                    "Échec sur la copie %s : %s. On passe à la suivante.",
-                    copy.copy_id,
-                    exc,
+                is_blank = (
+                    blank_threshold > 0 and ink_ratio(load_image(copy.image_path)) < blank_threshold
                 )
-                failed_copies.append((copy.copy_id, str(exc)))
-                continue
+            except Exception as exc:  # noqa: BLE001 — image illisible : on remonte un échec
+                if trace is not None:
+                    trace.update(level="ERROR", status_message=str(exc))
+                return _CopyOutcome(copy.copy_id, "failed", error=str(exc))
 
-            if not prediction.transcribed:
-                non_transcrites.append(copy.copy_id)
-                logger.warning(
-                    "Copie non transcrite après %d tentative(s) : %s (exclue des métriques).",
-                    prediction.n_attempts,
-                    copy.copy_id,
+            if is_blank:
+                prediction: CopyPrediction = CopyPrediction(
+                    copy_id=copy.copy_id,
+                    items=[
+                        ItemPrediction(item_id=i, code="0", confidence=1.0, transcription="")
+                        for i in copy.item_ids
+                    ],
                 )
-                continue
+            else:
+                try:
+                    prediction = scorer.score_copy(copy, reference_text)
+                except Exception as exc:  # noqa: BLE001 — on veut TOUT rattraper ici
+                    if trace is not None:
+                        trace.update(level="ERROR", status_message=str(exc))
+                    return _CopyOutcome(copy.copy_id, "failed", error=str(exc))
+
+                if not prediction.transcribed:
+                    if trace is not None:
+                        trace.update(
+                            level="WARNING",
+                            status_message="copie non transcrite",
+                            output={"transcribed": False, "n_attempts": prediction.n_attempts},
+                        )
+                    return _CopyOutcome(
+                        copy.copy_id, "non_transcribed", n_attempts=prediction.n_attempts
+                    )
 
             pred_by_id = {it.item_id: it for it in prediction.items}
-
-            # Écriture incrémentale de chaque item de la copie
+            records = []
+            n_accord = 0
             for item_id, expert_code in zip(copy.item_ids, copy.expert_codes, strict=True):
                 pred = pred_by_id.get(item_id)
-                true_code = grid.normalize(expert_code, scheme)
-                pred_code = grid.normalize(pred.code, scheme) if pred else "?"
-                conf = pred.confidence if pred else 0.0
-                record = {
-                    "copy_id": copy.copy_id,
-                    "item_id": item_id,
-                    "y_true": true_code,
-                    "y_pred": pred_code,
-                    "confidence": conf,
-                    "transcription": pred.transcription if pred else None,
-                    "comparaison": pred.comparaison if pred else None,
-                    "raw_transcription": prediction.raw_transcription,
-                }
-                f_pred.write(json.dumps(record, ensure_ascii=False) + "\n")
+                true_code = reference.normalize(expert_code, scheme)
+                pred_code = reference.normalize(pred.code, scheme) if pred else "?"
+                records.append(
+                    {
+                        "copy_id": copy.copy_id,
+                        "item_id": item_id,
+                        "y_true": true_code,
+                        "y_pred": pred_code,
+                        "confidence": pred.confidence if pred else 0.0,
+                        "transcription": pred.transcription if pred else None,
+                        "comparaison": pred.comparaison if pred else None,
+                        "raw_transcription": prediction.raw_transcription,
+                        "approach": config.approach,
+                        "blank": is_blank,
+                    }
+                )
+                if pred_code == true_code:
+                    n_accord += 1
 
-            # Flush + fsync : les données sont sur le disque. Un crash après ce
-            # point ne peut plus perdre la copie qu'on vient d'écrire.
-            f_pred.flush()
-            os.fsync(f_pred.fileno())
+            if trace is not None and records:
+                accord_copie = n_accord / len(records)
+                trace.update(
+                    output={
+                        "n_items": len(records),
+                        "raw_agreement": accord_copie,
+                        "blank": is_blank,
+                    }
+                )
+                trace.score_trace(name="raw_agreement", value=accord_copie)
 
-    # Sauvegarde de la liste des échecs (utile pour relancer sélectivement)
+            lines = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+            return _CopyOutcome(copy.copy_id, "ok", lines=lines, blank=is_blank)
+
+    def _consume(outcome: _CopyOutcome, f_pred: object) -> None:
+        """Écrit/comptabilise le résultat d'une copie (thread principal uniquement)."""
+        if outcome.status == "failed":
+            logger.error(
+                "Échec sur la copie %s : %s. On passe à la suivante.",
+                outcome.copy_id,
+                outcome.error,
+            )
+            failed_copies.append((outcome.copy_id, outcome.error))
+        elif outcome.status == "non_transcribed":
+            non_transcrites.append(outcome.copy_id)
+            logger.warning(
+                "Copie non transcrite après %d tentative(s) : %s (exclue des métriques).",
+                outcome.n_attempts,
+                outcome.copy_id,
+            )
+        else:  # "ok"
+            if outcome.blank:
+                blank_copies.append(outcome.copy_id)
+            f_pred.write(outcome.lines)  # type: ignore[attr-defined]
+            # Flush + fsync : garantit que la copie écrite survit à un crash ultérieur.
+            f_pred.flush()  # type: ignore[attr-defined]
+            os.fsync(f_pred.fileno())  # type: ignore[attr-defined]
+
+    # Mode APPEND : conserve les copies déjà traitées lors d'une reprise.
+    with open(out_path, "a", encoding="utf-8") as f_pred:
+        desc = f"Évaluation ({config.name}, {workers} en parallèle)"
+        if workers <= 1:
+            # Chemin séquentiel (comportement historique), sans thread ni contexte copié.
+            for copy in tqdm(copies_a_traiter, desc=desc):
+                _consume(_score_one(copy), f_pred)
+        else:
+            # Chaque copie est soumise avec une COPIE du contexte courant, pour que la
+            # trace Langfuse hérite des attributs de session (propagate_attributes est
+            # actif dans le thread principal, pas dans les workers).
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [
+                    executor.submit(contextvars.copy_context().run, _score_one, copy)
+                    for copy in copies_a_traiter
+                ]
+                for future in tqdm(as_completed(futures), total=len(futures), desc=desc):
+                    _consume(future.result(), f_pred)
+
     if failed_copies:
         with open(failed_path, "w", encoding="utf-8") as f:
             for cid, msg in failed_copies:
@@ -222,9 +304,7 @@ def run_benchmark(
 
     logger.info("Prédictions sauvegardées : %s", out_path)
 
-    # Recharger l'intégralité du JSONL (celles traitées maintenant + celles
-    # déjà présentes en reprise) pour construire les métriques et les vecteurs
-    # alignés attendus par BenchmarkResult.
+    # Recharger tout le JSONL (copies de ce run + reprises) pour construire les métriques.
     y_true: list[str] = []
     y_pred: list[str] = []
     confidences: list[float | None] = []
@@ -244,10 +324,9 @@ def run_benchmark(
             confidences.append(rec.get("confidence"))
             item_ids.append(rec["item_id"])
             copy_ids.append(rec["copy_id"])
-    # Garde-fou : modèle et experts doivent coder dans le MÊME jeu de modalités.
-    # Après normalisation, tout code hors de l'alphabet attendu signale une
-    # incohérence (ex. prétraitement expert oublié, prompt non aligné sur le schéma).
-    attendus = grid.allowed_codes(scheme)
+    # Garde-fou : après normalisation, un code hors de l'alphabet attendu signale une
+    # incohérence (prétraitement expert oublié, prompt non aligné sur le schéma).
+    attendus = reference.allowed_codes(scheme)
     codes_vus = set(y_true) | set(y_pred)
     intrus = codes_vus - attendus - {"?"}  # "?" = réponse modèle non parsée, traité à part
     if intrus:
@@ -266,6 +345,15 @@ def run_benchmark(
             non_transcrites,
         )
 
+    if blank_copies:
+        logger.info(
+            "%d copie(s) vierge(s) détectée(s) (encre < %.1f%%) et auto-codée(s) "
+            '"0" (absent) sans appel modèle : %s',
+            len(blank_copies),
+            blank_threshold * 100,
+            blank_copies,
+        )
+
     metrics = compute_scoring_metrics(y_true, y_pred)
     return BenchmarkResult(
         metrics=metrics,
@@ -276,4 +364,5 @@ def run_benchmark(
         copy_ids=copy_ids,
         predictions_path=out_path,
         non_transcribed=non_transcrites,
+        blank_copies=blank_copies,
     )

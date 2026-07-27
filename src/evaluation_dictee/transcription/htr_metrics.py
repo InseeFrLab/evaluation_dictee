@@ -1,17 +1,7 @@
-"""Métriques d'évaluation de la transcription (HTR).
+"""Métriques HTR (CER, WER) : fidélité de LECTURE, pas correction orthographique.
 
-Compare une transcription produite par le modèle à une transcription de référence
-humaine. Les deux préservent les fautes de l'élève : on mesure la fidélité de
-LECTURE, pas la correction orthographique.
-
-Métriques principales :
-- **CER** (Character Error Rate) : distance d'édition au niveau caractère,
-  normalisée par la longueur de la référence. 0 = transcription parfaite.
-- **WER** (Word Error Rate) : idem au niveau mot.
-
-On fournit aussi une variante « normalisée » (minuscules, sans accents ni
-ponctuation) pour distinguer les erreurs de lecture substantielles des simples
-différences de casse/accents.
+Une variante « normalisée » (minuscules, sans accents ni ponctuation) isole les
+erreurs de lecture substantielles des simples différences de casse/accents.
 """
 
 from __future__ import annotations
@@ -21,16 +11,14 @@ from dataclasses import dataclass
 
 
 def _levenshtein(a: list[str] | str, b: list[str] | str) -> int:
-    """Distance d'édition (insertions + suppressions + substitutions) entre a et b.
-
-    Fonctionne sur des chaînes (niveau caractère) ou des listes (niveau mot).
+    """Distance d'édition entre a et b (chaînes = niveau caractère, listes = niveau mot).
 
     Args:
-        a: séquence de référence.
-        b: séquence hypothèse.
+        a: Première séquence (chaîne ou liste de mots).
+        b: Seconde séquence (chaîne ou liste de mots).
 
     Returns:
-        Le nombre minimal d'opérations pour transformer a en b.
+        Nombre minimal d'insertions, suppressions et substitutions.
     """
     n, m = len(a), len(b)
     if n == 0:
@@ -48,7 +36,14 @@ def _levenshtein(a: list[str] | str, b: list[str] | str) -> int:
 
 
 def _normalize_text(s: str) -> str:
-    """Minuscule, sans accents, sans ponctuation (pour la variante normalisée)."""
+    """Minuscule, sans accents, sans ponctuation (pour la variante normalisée).
+
+    Args:
+        s: Texte à normaliser.
+
+    Returns:
+        Texte en minuscules, sans accents ni ponctuation, espaces réduits.
+    """
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = "".join(c if c.isalnum() or c.isspace() else " " for c in s.lower())
@@ -57,16 +52,7 @@ def _normalize_text(s: str) -> str:
 
 @dataclass
 class TranscriptionMetrics:
-    """Métriques de transcription pour un échantillon ou un corpus.
-
-    Attributes:
-        cer: Character Error Rate (0 = parfait).
-        wer: Word Error Rate.
-        cer_normalise: CER après normalisation (casse/accents/ponctuation ignorés).
-        wer_normalise: WER après normalisation.
-        n_char_ref: nombre de caractères de la référence.
-        n_mots_ref: nombre de mots de la référence.
-    """
+    """Métriques de transcription pour un échantillon ou un corpus."""
 
     cer: float
     wer: float
@@ -80,11 +66,11 @@ def compute_transcription_metrics(reference: str, hypothesis: str) -> Transcript
     """Calcule CER et WER (bruts et normalisés) entre référence et hypothèse.
 
     Args:
-        reference: transcription de référence (humaine).
-        hypothesis: transcription produite par le modèle.
+        reference: Transcription de référence.
+        hypothesis: Transcription produite par le modèle.
 
     Returns:
-        Les métriques de transcription.
+        Métriques CER/WER bruts et normalisés, et longueurs de la référence.
     """
     ref_c, hyp_c = reference, hypothesis
     ref_w, hyp_w = reference.split(), hypothesis.split()

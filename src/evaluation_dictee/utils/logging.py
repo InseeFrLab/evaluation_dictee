@@ -10,11 +10,14 @@ from rich.logging import RichHandler
 def get_logger(name: str) -> logging.Logger:
     """Renvoie un logger configuré avec un affichage enrichi (rich).
 
+    Le handler rich (niveau INFO, tracebacks enrichis) n'est ajouté qu'une seule
+    fois : un logger déjà pourvu de handlers est renvoyé tel quel.
+
     Args:
-        name: nom du logger (typiquement __name__).
+        name: Nom du logger (typiquement `__name__` du module appelant).
 
     Returns:
-        Le logger prêt à l'emploi.
+        Le logger correspondant, muni d'un `RichHandler` au premier appel.
     """
     logger = logging.getLogger(name)
     if not logger.handlers:
