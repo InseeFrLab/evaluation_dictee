@@ -43,6 +43,14 @@ notebooks = [
     "jupyterlab>=4.6.1",
     "matplotlib>=3.11.1",
 ]
+# Rendu du site Quarto : les pages recalculent leurs figures au rendu, ce qui
+# demande matplotlib et un noyau Jupyter (`uv sync --extra website`).
+website = [
+    "ipykernel>=6.29",
+    "matplotlib>=3.11.1",
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+]
 
 # Outillage de développement (lint, typage, tests) — NON publié avec le paquet.
 # Le groupe `dev` est installé automatiquement par un simple `uv sync`.

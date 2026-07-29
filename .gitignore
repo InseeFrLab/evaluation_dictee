@@ -10,6 +10,14 @@
 *.jpeg
 # Exceptions : on autorise les images de documentation
 !docs/**/*.png
+# Exceptions : les gabarits du site (logos Insee, pictogrammes, licences CC)
+# ne sont pas des données élèves — sans ça, le site ne se construit plus.
+!website/slides/_extensions/**/*.png
+!website/slides/_extensions/**/*.jpg
+!website/slides/_extensions/**/*.jpeg
+!website/slides/img/**/*.png
+!website/slides/img/**/*.jpg
+!website/img/**/*.png
 
 # ─── MLflow (suivi local, ne pas versionner) ───────────────────
 mlflow.db

@@ -1,6 +1,6 @@
 ---
 title: "Évaluation de la prédiction"
-subtitle: "Comment assurer la fiabilité de la prédiction "
+subtitle: "Comment assurer la fiabilité de la prédiction ?"
 ---
 
 Évaluer, ici, ce n'est pas seulement « le modèle a-t-il raison ». C'est répondre à

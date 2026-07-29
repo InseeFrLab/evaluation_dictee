@@ -1,0 +1,12 @@
+---
+title: "Évaluation automatique de la production d'écrits — Point d'étape du 27/07/2026"
+image: /img/cards/logo_copies_eleves_pile_corrigee.svg
+date: "2026-07-27"
+description: |
+  <b>Description :</b> Vue d'ensemble du projet, premiers tests réalisés par le SSP Lab (pipeline, choix, premiers résultats).
+author: Laura Gaimard
+slides:
+  text: Slides
+  url: /slides/presentation-generale.html
+order: 1
+---

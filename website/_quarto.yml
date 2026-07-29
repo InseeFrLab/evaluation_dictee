@@ -1,6 +1,16 @@
 project:
   type: website
   output-dir: _site
+  render:
+    - "*.qmd"
+    - "cards/*.qmd"
+    - "slides/*.qmd"
+  resources:
+    - "slides/_extensions/"
+    - "slides/css/"
+    - "slides/js/"
+    - "slides/img/"
+    - "slides/modulesCompl/"
 
 website:
   title: "Évaluation automatique de la dictée"
@@ -14,19 +24,26 @@ website:
     left:
       - text: "Accueil"
         file: index.qmd
+      - text: "Configuration du SSPCloud"
+        file: initialisation.qmd
       - text: "Architecture"
         file: architecture.qmd
       - text: "Résultats"
         file: resultats.qmd
+      - text: "Écarts IA – humain"
+        file: ecarts.qmd
       - text: "Évaluation & métriques"
         file: evaluation.qmd
       - text: "Fine-tuning"
         file: finetuning.qmd
+      - text: "Présentations"
+        file: presentations.qmd
 
 format:
   html:
     theme:
       - cosmo
+      - style/styles.scss
     toc: true
     toc-title: "Sur cette page"
     toc-depth: 3

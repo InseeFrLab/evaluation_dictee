@@ -160,9 +160,7 @@ def test_copie_vierge_auto_codee_zero(patched, monkeypatch, tmp_path: Path) -> N
 
     assert result.blank_copies == ["c001.png"]
     assert "c001.png" not in scorer.scored  # aucune inférence sur une copie vierge
-    recs = [
-        json.loads(line) for line in _read_lines(tmp_path / "test_run_predictions.jsonl")
-    ]
+    recs = [json.loads(line) for line in _read_lines(tmp_path / "test_run_predictions.jsonl")]
     vierge = [r for r in recs if r["copy_id"] == "c001.png"]
     assert len(vierge) == 3
     assert all(r["y_pred"] == "0" for r in vierge)

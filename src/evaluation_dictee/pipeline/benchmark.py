@@ -174,10 +174,12 @@ def run_benchmark(
             # (seul le pré-imprimé marque quelques % d'encre). Traitée identiquement
             # pour toutes les méthodes → tous les items codés "0" (absent), sans appel
             # modèle. Empêche l'end-to-end d'halluciner la référence sur une page vide.
+            # La densité mesurée est conservée telle quelle dans le JSONL, et pas
+            # seulement le verdict : c'est ce qui permet de tracer la distribution
+            # et de rejuger le seuil sans relancer un benchmark de 30 h.
             try:
-                is_blank = (
-                    blank_threshold > 0 and ink_ratio(load_image(copy.image_path)) < blank_threshold
-                )
+                densite_encre = ink_ratio(load_image(copy.image_path))
+                is_blank = blank_threshold > 0 and densite_encre < blank_threshold
             except Exception as exc:  # noqa: BLE001 — image illisible : on remonte un échec
                 if trace is not None:
                     trace.update(level="ERROR", status_message=str(exc))
@@ -229,6 +231,7 @@ def run_benchmark(
                         "raw_transcription": prediction.raw_transcription,
                         "approach": config.approach,
                         "blank": is_blank,
+                        "ink_ratio": densite_encre,
                     }
                 )
                 if pred_code == true_code:

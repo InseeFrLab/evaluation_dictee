@@ -1,0 +1,113 @@
+/*-- scss:rules --*/
+
+/* Grille de cartes de la page « Présentations » (listing-grid.ejs) */
+
+.grid-item-link {
+  color: inherit;
+  text-decoration: none;
+  transition: transform 0.2s ease-in-out;
+}
+
+.grid-item-link:hover {
+  transform: scale(1.03);
+}
+
+.no-anchor.card-title.listing-title {
+  font-weight: 600 !important;
+}
+
+.listing-categories .listing-category .listing-href {
+  text-decoration: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Bandeaux de codage item par item de la page « Écarts IA – humain ».
+   Une « puce » = un item de la dictée : mot attendu, code attribué, et un détail
+   optionnel (code de l'expert, mot réellement lu par le modèle).
+   Convention de couleur : VERT = accord modèle/expert, ROUGE = désaccord.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.bandeau-puces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0.6rem 0 1.2rem;
+}
+
+.puce {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3px 6px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  min-width: 28px;
+  line-height: 1.25;
+  cursor: help;
+}
+
+.puce-mot {
+  font-size: 0.85rem;
+}
+
+.puce-code {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #444;
+}
+
+.puce-detail {
+  font-size: 0.62rem;
+  color: #7a1020;
+  font-style: italic;
+  max-width: 11rem;
+  text-align: center;
+}
+
+/* Bandeau du modèle : l'accord avec l'expert donne la couleur. */
+.puce-accord {
+  background: #d9efd9;
+  border-color: #8bc48b;
+}
+
+.puce-desaccord {
+  background: #f8d7da;
+  border-color: #c96a72;
+}
+
+/* Bandeau de l'expert : la couleur porte le code, pas l'accord. */
+.puce-code-1 {
+  background: #f6f6f6;
+}
+
+.puce-code-9 {
+  background: #fff3cd;
+}
+
+.puce-code-0 {
+  background: #e2e2e2;
+}
+
+/* Code hors grille simplifiée (vide, « i », « v » — héritage de la saisie AGATE). */
+.puce-code-autre {
+  background: #ede7f6;
+}
+
+/* Item où le modèle de référence diverge de l'expert. */
+.puce-divergente {
+  border-color: #b00020;
+  border-width: 2px;
+}
+
+.legende-puces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 1rem 0;
+  font-size: 0.85rem;
+}
+
+.legende-puces .puce {
+  min-width: 0;
+}

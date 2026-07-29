@@ -1,0 +1,739 @@
+---
+title: "Analyse des plus grands écarts d'évaluation IA – humain"
+subtitle: "Les 20 copies sur lesquelles le modèle et l'annotateur expert divergent le plus"
+toc-depth: 2
+---
+
+```{python}
+#| echo: false
+#| warning: false
+# Même câblage que la page Résultats : on relit les prédictions exportées et on
+# recalcule tout au rendu. Voir `website/_analyse.py`.
+import sys
+
+sys.path.insert(0, ".")
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+import _analyse as A
+
+A.init_matplotlib()
+
+#: Nombre de copies détaillées.
+N_PIRES = 20
+
+RUNS = A.charger_runs()
+ITEMS, MOTS, RANGS = A.charger_grille()
+REF = A.RUN_REFERENCE if A.RUN_REFERENCE in RUNS else (next(iter(RUNS)) if RUNS else "")
+
+# Les copies vierges sont écartées d'emblée : leur désaccord est maximal parce que
+# l'élève n'a rien écrit, ce qui ne dit rien de la qualité du codage. Le critère
+# est celui du pipeline (densité d'encre), relu depuis le marqueur `blank` du
+# JSONL. Elles sont récapitulées dans leur propre section, plus bas.
+BRUTS = {label: A.classement_ecarts(r.df) for label, r in RUNS.items()}
+VIERGES, CLASSEMENTS = {}, {}
+for label, classement in BRUTS.items():
+    VIERGES[label], CLASSEMENTS[label] = A.separer_copies_vierges(classement)
+MARQUEUR_OK = A.marqueur_vierge_disponible(RUNS)
+
+SEUIL_ENCRE = A.seuil_encre()
+ENCRE, SOURCE_ENCRE = A.charger_densites_encre(RUNS)
+```
+
+::: {.callout-important}
+## Les copies numérisées ne sont pas affichées ici
+
+Les copies sont des écritures d'élèves **mineurs**. Conformément à la règle du
+projet, ces microdonnées ne quittent jamais le SSP Cloud et ne sont jamais
+versionnées : **ce site ne contient aucune image de copie**, y compris quand il
+est rendu à l'intérieur de l'environnement sécurisé.
+
+Cette page fournit donc, pour chaque copie, tout le reste : les statistiques
+d'écart, la **transcription produite par le modèle**, le **codage de
+l'annotateur expert** et le **codage du modèle**, désaccords en rouge et accords
+en vert.
+
+Pour examiner une copie **avec son image**, générer le diagnostic visuel dans
+l'environnement sécurisé — il produit un HTML autonome, à ne pas sortir du SSP
+Cloud :
+
+```python
+from evaluation_dictee.evaluation.visual_diff import report_single_copy
+
+report_single_copy(
+    copy_id="dictee_2015_0042.png",
+    predictions_df=predictions,        # load_predictions(<run>_predictions.jsonl)
+    grid_items=grille.items,
+    images_dir="s3://projet-production-ecrits-depp/dictee_2015/",
+    expert_labels=labels,
+    output_path="data/processed/diagnostic_copie.html",
+)
+```
+
+Voir aussi `notebooks/04_diagnostic.ipynb`.
+:::
+
+```{python}
+#| echo: false
+#| output: asis
+if not RUNS:
+    print('::: {.callout-warning appearance="simple"}')
+    print("Aucun run de prédictions n'a pu être chargé : cette page est vide.")
+    print("Vérifier `S3_PREDICTIONS_PREFIX` et l'export des prédictions.")
+    print(":::")
+    print(A.bloc_notes())
+```
+
+## Comment les copies sont classées
+
+Le critère est le **taux de désaccord** : la part des 83 items de la copie où le
+code du modèle diffère de celui de l'annotateur expert. C'est la mesure la plus
+directe de l'écart d'évaluation, item par item.
+
+Les **copies vierges sont écartées du classement**, au sens exact où le pipeline
+l'entend : le benchmark mesure la **densité d'encre** de l'image
+(`data/loaders.ink_ratio`) et, sous le seuil `data.blank_ink_threshold` du YAML du
+run (2,5 % par défaut — seul le pré-imprimé marque), déclare la copie vierge, la
+code « 0 » partout sans appeler le modèle, et estampille chaque ligne du JSONL
+d'un `blank: true`. Le site **relit ce marqueur** plutôt que d'appliquer son
+propre critère : une seule définition, celle du pipeline. Ces copies sont traitées
+à part dans la [section suivante](#copies-vierges), car le mode de défaillance
+qu'elles révèlent compte en soi.
+
+::: {.callout-note appearance="simple"}
+Un second critère est possible : l'écart sur le **nombre total d'erreurs**
+attribuées à la copie (`|erreurs modèle − erreurs expert|`), qui cible les copies
+où le modèle se trompe sur le *niveau* de l'élève même quand les désaccords
+item par item se compensent. Il est affiché en colonne dans les tableaux
+ci-dessous, pour comparaison.
+:::
+
+## Copies vierges, écartées du classement {#copies-vierges}
+
+```{python}
+#| echo: false
+#| output: asis
+if RUNS and not MARQUEUR_OK:
+    sans = [label for label, r in RUNS.items() if A.COLONNE_VIERGE not in r.df.columns]
+    print('::: {.callout-warning appearance="default"}')
+    print("## Ces runs sont antérieurs au filtre de densité d'encre\n")
+    print(
+        "Le marqueur `blank` est absent des prédictions exportées pour : "
+        + ", ".join(f"**{label}**" for label in sans)
+        + ". Ces runs ont été produits avant que `pipeline/benchmark.py` ne "
+        "détecte les copies vierges, **aucune copie n'est donc écartée ici** et le "
+        "haut du classement est saturé de copies vides — le modèle y a bel et bien "
+        "été appelé, et il a halluciné le texte de référence.\n"
+    )
+    print(
+        "Le correctif est déjà dans le code : il suffit de **relancer le "
+        "benchmark**, puis de réexporter. Les copies effectivement sous le seuil "
+        "d'encre seront alors codées « 0 » sans appel modèle — donc en accord avec "
+        "l'annotateur quand celui-ci les a aussi jugées absentes — et quitteront le "
+        "haut de ce classement. Les copies portant un peu d'encre (un prénom, une "
+        "amorce de phrase) resteront hors du filtre : c'est le seuil "
+        "`blank_ink_threshold` qui arbitre, pas le codage de l'expert.\n"
+    )
+    print("```bash")
+    print("uv run scripts/run_benchmark.py      --config configs/scoring/dictee_end2end.yaml")
+    print("uv run scripts/export_predictions.py --config configs/scoring/dictee_end2end.yaml")
+    print("```")
+    print(":::")
+```
+
+```{python}
+#| echo: false
+#| output: asis
+if RUNS and MARQUEUR_OK:
+    lignes = []
+    for label, vierges in VIERGES.items():
+        lignes.append(
+            [
+                f"Approche {label}",
+                A.milliers(len(vierges)),
+                A.pts(len(vierges) / len(BRUTS[label]) * 100, 2),
+                A.pts(vierges["pct_desaccord"].mean()) if not vierges.empty else "—",
+                A.pts(BRUTS[label]["pct_desaccord"].mean()),
+            ]
+        )
+    print(
+        A.table_markdown(
+            [
+                "", "Copies vierges", "Part du corpus",
+                "Désaccord moyen sur ces copies", "Désaccord moyen d'ensemble",
+            ],
+            lignes,
+            "Copies dont la densité d'encre est sous le seuil du pipeline",
+        )
+    )
+    print(
+        "\n<small>Le pipeline code ces copies « 0 » sur tous les items sans appeler "
+        "le modèle : leur désaccord avec l'annotateur ne mesure plus le codage, mais "
+        "la concordance entre le filtre d'encre et le jugement de l'expert.</small>"
+    )
+```
+
+### D'où vient le seuil de densité d'encre
+
+```{python}
+#| echo: false
+#| output: asis
+if ENCRE is None:
+    print('::: {.callout-note appearance="simple"}')
+    print(
+        "La distribution des densités d'encre n'est pas disponible : ni les "
+        "prédictions ni le corpus mesuré ne la portent. La produire en quelques "
+        "minutes, sans appel modèle ni GPU :\n"
+    )
+    print("```bash")
+    print("uv run scripts/compute_ink_ratios.py \\")
+    print("    --config configs/scoring/dictee_end2end.yaml --export")
+    print("```")
+    print(":::")
+else:
+    print(
+        f"Le seuil du projet vaut **{A.pct(SEUIL_ENCRE)}** de pixels sombres "
+        f"(`data.blank_ink_threshold`). Il n'a pas été choisi par tâtonnement : la "
+        "distribution ci-dessous montre qu'il tombe dans un **intervalle vide**, "
+        "entre les formulaires non remplis et les copies écrites. Toute valeur de "
+        "cet intervalle donnerait exactement le même partage — le classement ne "
+        "dépend donc pas du réglage fin du seuil.\n"
+    )
+    print(f"<small>Source des mesures : {SOURCE_ENCRE}.</small>")
+```
+
+```{python}
+#| echo: false
+#| warning: false
+#| fig-cap: "Densité d'encre des copies. À gauche, la distribution sur tout le corpus (échelle verticale logarithmique, sans quoi le petit mode des copies vierges serait invisible). À droite, les 120 copies les moins encrées, classées : la marche verticale marque la frontière entre formulaires non remplis et copies écrites."
+if ENCRE is not None:
+    # Croiser la mesure avec le codage de l'annotateur : si les copies que le seuil
+    # écarte sont exactement celles où l'expert n'a rien pu coder, la mesure
+    # d'encre et le jugement humain concordent.
+    ref = BRUTS[REF][["pct_absent_expert", "pct_hors_grille_expert"]]
+    encre = ENCRE.join(ref, how="inner")
+    encre["incodable_expert"] = (
+        encre["pct_absent_expert"] + encre["pct_hors_grille_expert"]
+    ) >= 90
+    sous = encre[encre[A.COLONNE_ENCRE] < SEUIL_ENCRE]
+    sur = encre[encre[A.COLONNE_ENCRE] >= SEUIL_ENCRE]
+    borne_basse = sous[A.COLONNE_ENCRE].max() if not sous.empty else None
+    borne_haute = sur[A.COLONNE_ENCRE].min() if not sur.empty else None
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.4))
+
+    # ── Panneau gauche : distribution d'ensemble ─────────────────────────────
+    ax1.hist(
+        encre[A.COLONNE_ENCRE], bins=120, color=A.C_EXPERT,
+        edgecolor="white", linewidth=0.2,
+    )
+    # Ombrer la zone « vierge » sans étendre l'axe jusqu'à 0 : on part de la borne
+    # gauche que l'histogramme a fixée d'après les données.
+    ax1.axvspan(ax1.get_xlim()[0], SEUIL_ENCRE, color=A.C_PB, alpha=0.07)
+    ax1.axvline(SEUIL_ENCRE, color=A.C_PB, lw=2, ls="--")
+    # Texte cantonné au coin haut gauche, libre de barres : aucune flèche ne
+    # traverse les données.
+    ax1.text(
+        0.02, 0.96,
+        f"seuil {A.pct(SEUIL_ENCRE)}\n← {len(sous)} copies vierges",
+        transform=ax1.transAxes, va="top", ha="left",
+        fontsize=9.5, color=A.C_PB, fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=A.C_PB, alpha=0.9),
+    )
+    ax1.set_xlabel("Densité d'encre (part de pixels sombres)")
+    ax1.set_ylabel("Nombre de copies (échelle logarithmique)")
+    ax1.set_yscale("log")
+    ax1.set_title("Distribution sur tout le corpus", fontweight="bold")
+
+    # ── Panneau droit : les copies les moins encrées, classées ───────────────
+    # Une courbe de valeurs triées rend la rupture lisible sans recouvrement,
+    # là où un nuage dispersé noierait les quelques dizaines de copies vierges.
+    n_zoom = 120
+    tri = encre.sort_values(A.COLONNE_ENCRE).head(n_zoom).reset_index()
+    rangs = np.arange(1, len(tri) + 1)
+    if borne_basse is not None and borne_haute is not None:
+        ax2.axhspan(borne_basse, borne_haute, color="grey", alpha=0.18)
+        # Étiquette posée juste au-dessus de la bande, pour ne pas chevaucher la
+        # ligne de seuil qui la traverse.
+        ax2.annotate(
+            f"aucune copie entre {borne_basse:.2%} et {borne_haute:.2%}",
+            xy=(len(tri) * 0.99, borne_haute),
+            xytext=(0, 4), textcoords="offset points",
+            ha="right", va="bottom", fontsize=9, color="#333", fontstyle="italic",
+        )
+    ax2.axhline(SEUIL_ENCRE, color=A.C_PB, lw=2, ls="--", label=f"seuil {A.pct(SEUIL_ENCRE)}")
+    for masque, couleur, etiquette in [
+        (~tri["incodable_expert"], A.C_EXPERT, "l'expert a codé la copie"),
+        (tri["incodable_expert"], A.C_PB, "l'expert n'a rien pu coder (≥ 90 % des items)"),
+    ]:
+        ax2.scatter(
+            rangs[masque.values], tri.loc[masque, A.COLONNE_ENCRE],
+            s=30, color=couleur, edgecolors="white", linewidths=0.4,
+            zorder=3, label=etiquette,
+        )
+    ax2.set_xlabel(f"Rang de la copie, des {n_zoom} moins encrées vers les plus encrées")
+    ax2.set_ylabel("Densité d'encre")
+    ax2.set_title(f"Les {n_zoom} copies les moins encrées", fontweight="bold")
+    ax2.legend(fontsize=8.5, loc="lower right")
+    plt.tight_layout()
+    plt.show()
+```
+
+```{python}
+#| echo: false
+#| output: asis
+if ENCRE is not None:
+    accord_expert = int(sous["incodable_expert"].sum())
+    faux_positifs = int((~sous["incodable_expert"]).sum())
+    manques = int(sur["incodable_expert"].sum())
+    lignes = [
+        [
+            "Copies sous le seuil (vierges)",
+            A.milliers(len(sous)),
+            A.pts(len(sous) / len(encre) * 100, 2),
+            f"{sous[A.COLONNE_ENCRE].min():.2%} – {sous[A.COLONNE_ENCRE].max():.2%}",
+        ],
+        [
+            "Copies au-dessus du seuil",
+            A.milliers(len(sur)),
+            A.pts(len(sur) / len(encre) * 100, 2),
+            f"{sur[A.COLONNE_ENCRE].min():.2%} – {sur[A.COLONNE_ENCRE].max():.2%}",
+        ],
+    ]
+    print(
+        A.table_markdown(
+            ["", "Copies", "Part du corpus", "Densité d'encre observée"],
+            lignes,
+            "Partage du corpus par le seuil de densité d'encre",
+        )
+    )
+    print(
+        f"\n**Concordance avec l'annotateur** — parmi les {len(sous)} copies que le "
+        f"seuil déclare vierges, **{accord_expert}** sont aussi celles où l'expert "
+        f"n'a pu coder aucun item (au moins 90 % d'items « absent » ou hors "
+        f"grille) ; {faux_positifs} portent trop peu d'encre alors que l'expert y a "
+        f"vu quelque chose. À l'inverse, {manques} copies dépassent le seuil bien "
+        "que l'expert n'ait rien pu y coder — écriture illisible ou trop pâle, que "
+        "la densité d'encre ne peut pas distinguer d'une copie écrite. Ces cas "
+        "restent donc dans le classement, signalés dans leur fiche."
+    )
+```
+
+::: {.callout-important}
+## Le mode de défaillance le plus net du modèle
+
+Sur une copie vide, le modèle **reconstitue le texte de la dictée de mémoire et
+code tous les items « correct »**. Il connaît le texte de référence — il fait
+partie de son prompt — et le restitue au lieu de constater qu'il n'y a rien à
+lire. C'est la forme extrême du biais de **sur-correction** : non seulement le
+modèle ne voit pas les erreurs de l'élève, mais il fabrique une copie parfaite là
+où il n'y a pas de copie du tout.
+
+Deux conséquences pratiques :
+
+1. **Le filtre en amont est la bonne réponse**, et il existe déjà : le seuil de
+   densité d'encre (`data.blank_ink_threshold`) code ces copies « 0 » sans
+   solliciter le modèle. Le problème relève du pré-traitement, pas de la finesse
+   du codage.
+2. **L'approche two-stage se comporte mieux sans ce filtre** : ne parvenant pas à
+   produire de transcription, elle **écarte** ces copies plutôt que d'inventer
+   une réponse. Un refus explicite vaut mieux qu'une erreur silencieuse.
+:::
+
+```{python}
+#| echo: false
+#| output: asis
+if RUNS and MARQUEUR_OK and any(not v.empty for v in VIERGES.values()):
+    print("::: {.panel-tabset}")
+    for label, vierges in VIERGES.items():
+        print(f"\n## Approche {label}\n")
+        if vierges.empty:
+            print("*Aucune copie vierge détectée dans ce run.*\n")
+            continue
+        lignes = [
+            [
+                f"`{copy_id}`",
+                A.pts(ligne["pct_absent_expert"]),
+                A.pts(ligne["pct_hors_grille_expert"]),
+                A.pts(ligne["pct_desaccord"]),
+                str(int(ligne["n_erreurs_expert"])),
+            ]
+            for copy_id, ligne in vierges.iterrows()
+        ]
+        print(
+            A.table_markdown(
+                [
+                    "Copie", "Items codés « absent »", "Items hors grille", "Désaccord",
+                    "Erreurs vues par l'expert",
+                ],
+                lignes,
+                f"Copies vierges — approche {label}",
+            )
+        )
+    print("\n:::")
+    print(
+        "\n<small>Aucune fiche détaillée n'est produite pour ces copies : le codage "
+        "y est automatique (« 0 » partout) et donc identique d'une copie à l'autre. "
+        "Le désaccord résiduel mesure les cas où l'annotateur a vu quelque chose "
+        "que le filtre d'encre a manqué, ou l'inverse. Le classement et les fiches "
+        "ci-dessous portent sur les copies exploitables.</small>"
+    )
+```
+
+## Les copies les plus divergentes
+
+```{python}
+#| echo: false
+#| output: asis
+if RUNS:
+    lignes = []
+    for label, classement in CLASSEMENTS.items():
+        pires = classement.head(N_PIRES)
+        lignes.append(
+            [
+                f"Approche {label}",
+                A.milliers(len(classement)),
+                A.pts(classement["pct_desaccord"].mean()),
+                A.pts(classement["pct_desaccord"].median()),
+                A.pts(pires["pct_desaccord"].min()),
+                A.pts(pires["pct_desaccord"].max()),
+                A.pts(pires["n_desaccords"].sum() / classement["n_desaccords"].sum() * 100),
+            ]
+        )
+    print(
+        A.table_markdown(
+            [
+                "", "Copies", "Désaccord moyen", "Désaccord médian",
+                f"Seuil d'entrée au top {N_PIRES}", "Pire copie",
+                f"Part des désaccords portée par le top {N_PIRES}",
+            ],
+            lignes,
+            f"Où se situent les {N_PIRES} pires copies dans le corpus classé",
+        )
+    )
+    premier = CLASSEMENTS[REF]
+    part = premier.head(N_PIRES)["n_desaccords"].sum() / premier["n_desaccords"].sum() * 100
+    print(
+        f"\n**Lecture** : les {N_PIRES} pires copies ne portent que "
+        f"{A.pts(part)} des désaccords totaux de l'approche {REF}. Les écarts ne "
+        "sont donc **pas concentrés sur une poignée de copies aberrantes** : ils "
+        "sont diffus sur tout le corpus. Corriger ces cas extrêmes ne réglerait "
+        "pas le problème de fond — mais ils restent le meilleur endroit pour "
+        "*comprendre* les modes de défaillance du modèle."
+    )
+```
+
+```{python}
+#| echo: false
+#| output: asis
+# Une seule réserve doit être dite avant de lire les fiches : si plus de N_PIRES
+# copies sont à égalité au sommet, la sélection parmi elles est arbitraire.
+if RUNS:
+    alertes = []
+    for label, classement in CLASSEMENTS.items():
+        maxi = classement["pct_desaccord"].max()
+        n_ex_aequo = int((classement["pct_desaccord"] >= maxi - 1e-9).sum())
+        if n_ex_aequo > N_PIRES:
+            alertes.append(
+                f"**Approche {label}** — {n_ex_aequo} copies sont à égalité au "
+                f"désaccord maximal ({A.pts(maxi)}) : les {N_PIRES} retenues sont "
+                "les premières par identifiant, un choix arbitraire parmi elles."
+            )
+    if alertes:
+        print('::: {.callout-note appearance="simple"}')
+        print("**Ex æquo au sommet du classement**\n")
+        for alerte in alertes:
+            print(f"- {alerte}")
+        print(":::")
+```
+
+```{python}
+#| echo: false
+#| warning: false
+#| fig-cap: "Distribution du taux de désaccord par copie. La zone ombrée est celle des 20 copies détaillées ci-dessous."
+if RUNS:
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13.5, 4.8))
+    for label, classement in CLASSEMENTS.items():
+        couleur = RUNS[label].couleur
+        ax1.hist(
+            classement["pct_desaccord"], bins=40, color=couleur, alpha=0.55,
+            edgecolor="white", linewidth=0.3, label=f"Approche {label}",
+        )
+        seuil = classement.head(N_PIRES)["pct_desaccord"].min()
+        ax1.axvspan(seuil, 100, color=couleur, alpha=0.10)
+        ax1.axvline(seuil, color=couleur, ls="--", lw=1.4)
+    ax1.set_xlabel("Taux de désaccord de la copie (%)")
+    ax1.set_ylabel("Nombre de copies")
+    ax1.set_title(f"Où se situent les {N_PIRES} pires copies", fontweight="bold")
+    ax1.legend(fontsize=8.5)
+
+    # Courbe de concentration : les désaccords sont-ils portés par peu de copies ?
+    for label, classement in CLASSEMENTS.items():
+        cumul = classement["n_desaccords"].cumsum() / classement["n_desaccords"].sum() * 100
+        part_copies = np.arange(1, len(classement) + 1) / len(classement) * 100
+        ax2.plot(part_copies, cumul, color=RUNS[label].couleur, lw=2.2, label=f"Approche {label}")
+    ax2.plot([0, 100], [0, 100], color="grey", ls="--", lw=1, label="répartition uniforme")
+    ax2.set_xlabel("% de copies, des plus divergentes aux plus fidèles")
+    ax2.set_ylabel("% cumulé des désaccords")
+    ax2.set_title("Concentration des désaccords", fontweight="bold")
+    ax2.legend(fontsize=8.5, loc="lower right")
+    plt.tight_layout()
+    plt.show()
+```
+
+### Classement
+
+```{python}
+#| echo: false
+#| output: asis
+if RUNS:
+    print("::: {.panel-tabset}")
+    for label, classement in CLASSEMENTS.items():
+        print(f"\n## Approche {label}\n")
+        lignes = []
+        for rang, (copy_id, ligne) in enumerate(classement.head(N_PIRES).iterrows(), start=1):
+            lignes.append(
+                [
+                    str(rang),
+                    f"`{copy_id}`",
+                    A.pts(ligne["pct_desaccord"]),
+                    f"{int(ligne['n_desaccords'])} / {int(ligne['n_items'])}",
+                    str(int(ligne["n_erreurs_expert"])),
+                    str(int(ligne["n_erreurs_modele"])),
+                    f"{int(ligne['ecart_n_erreurs']):+d}",
+                    A.pts(ligne["pct_absent_expert"] + ligne["pct_hors_grille_expert"]),
+                ]
+            )
+        print(
+            A.table_markdown(
+                [
+                    "Rang", "Copie", "Désaccord", "Items en désaccord",
+                    "Erreurs — expert", "Erreurs — modèle", "Écart",
+                    "Items incodables (expert)",
+                ],
+                lignes,
+                f"Les {N_PIRES} copies les plus divergentes — approche {label}",
+            )
+        )
+    print("\n:::")
+```
+
+```{python}
+#| echo: false
+#| output: asis
+if len(RUNS) > 1 and REF:
+    autres = [label for label in CLASSEMENTS if label != REF]
+    rangs_ref = CLASSEMENTS[REF].head(N_PIRES).index
+    communs = {
+        label: len(set(rangs_ref) & set(CLASSEMENTS[label].head(N_PIRES).index))
+        for label in autres
+    }
+    detail = " ; ".join(
+        f"**{n} copies sur {N_PIRES}** en commun avec l'approche {label}"
+        for label, n in communs.items()
+    )
+    print(
+        f"Les deux approches ne butent pas sur les mêmes copies : {detail}. "
+        "Les modes de défaillance sont donc largement **spécifiques à "
+        "l'architecture**, ce qui explique que leur désaccord mutuel soit un bon "
+        "signal d'incertitude (voir la page [Résultats](resultats.qmd))."
+    )
+```
+
+### Quels items concentrent ces écarts ?
+
+```{python}
+#| echo: false
+#| warning: false
+#| fig-cap: "Items les plus impliqués dans les désaccords des 20 pires copies."
+if RUNS and ITEMS:
+    fig, ax = plt.subplots(figsize=(10, 6.5))
+    ref_run = RUNS[REF]
+    pires_ids = CLASSEMENTS[REF].head(N_PIRES).index
+    sub = ref_run.df[ref_run.df["copy_id"].isin(pires_ids)]
+    desaccords = sub[sub["y_true"] != sub["y_pred"]]
+    compte = desaccords["item_id"].value_counts().head(20).sort_values()
+    couleurs = [
+        A.C_PB if v >= 0.75 * N_PIRES else A.C_MOYEN if v >= 0.5 * N_PIRES else A.C_EXPERT
+        for v in compte.values
+    ]
+    ax.barh(
+        [A.libelle_item(i, MOTS, RANGS) for i in compte.index],
+        compte.values, color=couleurs, edgecolor="k", linewidth=0.3,
+    )
+    for i, v in enumerate(compte.values):
+        ax.annotate(
+            f"{v} / {N_PIRES}", (v, i), textcoords="offset points",
+            xytext=(4, 0), va="center", fontsize=8,
+        )
+    ax.set_xlabel(f"Nombre de copies (sur les {N_PIRES} pires) où l'item est en désaccord")
+    ax.set_title(f"Items les plus problématiques — approche {REF}", fontweight="bold")
+    ax.set_xlim(0, N_PIRES * 1.12)
+    plt.tight_layout()
+    plt.show()
+```
+
+## Les 20 copies en détail
+
+```{python}
+#| echo: false
+#| output: asis
+if RUNS and ITEMS:
+    exclusion = (
+        " — copies vierges exclues au seuil de densité d'encre du pipeline"
+        if MARQUEUR_OK
+        else " — **copies vierges comprises**, ce run étant antérieur au filtre de "
+        "densité d'encre (voir l'avertissement plus haut)"
+    )
+    print('::: {.callout-note appearance="simple"}')
+    print(
+        f"Les fiches ci-dessous portent sur les {N_PIRES} copies les plus "
+        f"divergentes de l'approche {REF}, l'approche privilégiée du projet"
+        f"{exclusion}. Chaque fiche compare le codage de l'expert à celui des "
+        "**deux** approches, ce qui permet de voir si l'erreur est partagée ou "
+        "spécifique à une architecture. Le classement de l'autre approche est donné "
+        "dans l'onglet correspondant plus haut."
+    )
+    print(":::")
+
+    # Couverture : signaler d'emblée combien des fiches ne pourront montrer
+    # qu'une seule approche, et pourquoi.
+    couverture = A.couverture_copies(RUNS)
+    pires_ids = set(CLASSEMENTS[REF].head(N_PIRES).index)
+    absentes = {
+        label: len(pires_ids - set(r.df["copy_id"].unique()))
+        for label, r in RUNS.items()
+        if label != REF
+    }
+    manquantes = {label: n for label, n in absentes.items() if n}
+    if manquantes:
+        detail = " ; ".join(
+            f"**{n} des {N_PIRES}** pour l'approche {label}" for label, n in manquantes.items()
+        )
+        print('::: {.callout-warning appearance="simple"}')
+        print(
+            f"**Toutes les fiches ne montrent pas les deux approches** : {detail}. "
+            "Ces copies ont été **écartées** par le run concerné, qui n'a produit "
+            "aucun codage pour elles — le two-stage abandonne celles dont l'étape 1 "
+            "ne rend aucune transcription. C'est en soi un résultat : sur les "
+            "copies les plus difficiles, cette approche **refuse de répondre** "
+            "plutôt que de produire un codage arbitraire. Sur l'ensemble du corpus, "
+            f"{A.milliers(couverture['n_ecartees'].max())} copies sont dans ce cas."
+        )
+        print(":::")
+    print(A.legende_puces())
+elif RUNS and not ITEMS:
+    print('::: {.callout-warning appearance="simple"}')
+    print("La grille de codage n'a pas pu être chargée : les fiches par copie,")
+    print("qui ont besoin du mot attendu de chaque item, sont omises.")
+    print(":::")
+```
+
+```{python}
+#| echo: false
+#| output: asis
+if RUNS and ITEMS and REF:
+    for rang, copy_id in enumerate(CLASSEMENTS[REF].head(N_PIRES).index, start=1):
+        stats_ref = CLASSEMENTS[REF].loc[copy_id]
+        print(f"\n### {rang}. `{copy_id}` — {A.pts(stats_ref['pct_desaccord'])} de désaccord\n")
+        nature = A.nature_copie(stats_ref)
+        if nature:
+            print(f'::: {{.callout-warning appearance="simple"}}\n{nature.capitalize()}.\n:::\n')
+
+        # ── Statistiques de la copie, expert vs chaque approche ──────────────
+        codes_expert = {}
+        lignes_stats = []
+        blocs = {}
+        for label, r in RUNS.items():
+            sub = r.df[r.df["copy_id"] == copy_id]
+            if sub.empty:
+                # Absence explicite : ce run n'a produit aucun codage pour la copie.
+                lignes_stats.append(
+                    [f"Approche {label}", *["—"] * 4, "*copie écartée par ce run*"]
+                )
+                continue
+            sub = sub.set_index("item_id")
+            codes_expert = {i: str(c) for i, c in sub["y_true"].items()} or codes_expert
+            codes_modele = {i: str(c) for i, c in sub["y_pred"].items()}
+            lectures = (
+                {i: str(t) for i, t in sub["transcription"].fillna("").items()}
+                if "transcription" in sub.columns
+                else {}
+            )
+            n_dis = int((sub["y_true"] != sub["y_pred"]).sum())
+            texte, provenance = A.transcription_modele(sub)
+            blocs[label] = (codes_modele, lectures, texte, provenance)
+            lignes_stats.append(
+                [
+                    f"Approche {label}",
+                    A.pct((len(sub) - n_dis) / len(sub)),
+                    f"{n_dis} / {len(sub)}",
+                    str(int((sub["y_true"] != "1").sum())),
+                    str(int((sub["y_pred"] != "1").sum())),
+                    A.decomposition_copie(sub.reset_index()),
+                ]
+            )
+        print(
+            A.table_markdown(
+                [
+                    "", "Accord", "Items en désaccord", "Erreurs vues par l'expert",
+                    "Erreurs vues par le modèle", "Transitions expert → modèle",
+                ],
+                lignes_stats,
+            )
+        )
+
+        # ── Transcription lue par le modèle ──────────────────────────────────
+        for label, (_, _, texte, provenance) in blocs.items():
+            print(
+                f"\n**Transcription par le modèle — approche {label}** "
+                f"<small>({provenance})</small>\n"
+            )
+            if texte:
+                print("> " + texte.replace("\n", "\n> "))
+            else:
+                print("> *(ce run ne fournit pas de transcription)*")
+
+        # ── Codages comparés ─────────────────────────────────────────────────
+        codes_ref_modele = blocs.get(REF, ({}, {}, "", ""))[0]
+        print("\n**Codage de l'annotateur expert**\n")
+        print(A.codage_expert_html(ITEMS, codes_expert, codes_ref_modele))
+        for label, (codes_modele, lectures, _, _) in blocs.items():
+            print(
+                f"\n**Codage par le modèle — approche {label}** "
+                "<small>(vert = accord avec l'expert, rouge = désaccord)</small>\n"
+            )
+            print(A.codage_modele_html(ITEMS, codes_expert, codes_modele, lectures))
+        print("\n---")
+```
+
+```{python}
+#| echo: false
+#| output: asis
+print(A.bloc_notes())
+```
+
+## Comment lire ces fiches
+
+- **Puce grise / jaune / sombre** dans le bandeau de l'expert : le code retenu
+  par l'annotateur (`1` correct, `9` erreur, `0` mot absent). Un liseré signale
+  les items où le modèle de référence diverge.
+- **Puce verte** dans un bandeau modèle : le modèle a mis le même code que
+  l'expert. **Puce rouge** : il a mis un code différent, et la puce indique
+  alors le code attendu (`exp. 9`, par exemple).
+- **`lu « … »`** sous une puce : le mot que le modèle a *lu* diffère du mot
+  attendu. C'est le signe d'une erreur de **lecture** plutôt que de **jugement** —
+  la distinction que l'approche en deux étapes cherche à rendre visible.
+- Survoler une puce affiche le détail (code du modèle et code de l'expert).
+
+::: {.callout-tip appearance="simple"}
+Trois modes de défaillance récurrents, à vérifier sur ces fiches :
+
+1. **Décalage propagé** — l'élève oublie un mot ou saute une ligne ; le modèle
+   décale tous les items suivants. Le désaccord explose en fin de dictée.
+2. **Sur-correction** — le modèle « lit » le mot attendu là où l'élève a écrit
+   autre chose, et valide donc à tort (le biais VLM le plus coûteux ici).
+3. **Sur-détection des absences** — le modèle code `0` (mot absent) une écriture
+   qu'il n'arrive pas à déchiffrer, au lieu de la juger.
+:::
