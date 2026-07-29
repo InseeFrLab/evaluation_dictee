@@ -1,5 +1,7 @@
 """Tests des outils statistiques et du rapport par item."""
 
+import math
+
 import pandas as pd
 import pytest
 
@@ -12,7 +14,13 @@ from evaluation_dictee.evaluation.report import (
     per_copy_metrics,
     per_item_metrics,
 )
-from evaluation_dictee.evaluation.statistics import cluster_bootstrap, wilson_interval
+from evaluation_dictee.evaluation.statistics import (
+    cluster_bootstrap,
+    design_effect,
+    kappa_interval,
+    kappa_interval_clustered,
+    wilson_interval,
+)
 
 
 # ── Wilson ────────────────────────────────────────────────────────────────────
@@ -33,6 +41,138 @@ def test_wilson_bornes_dans_0_1() -> None:
 def test_wilson_n_nul_leve_erreur() -> None:
     with pytest.raises(ValueError):
         wilson_interval(0, 0)
+
+
+# ── Kappa et son IC analytique ────────────────────────────────────────────────
+def test_kappa_interval_encadre_estimation() -> None:
+    y_true = ["1"] * 60 + ["9"] * 40
+    y_pred = ["1"] * 55 + ["9"] * 5 + ["9"] * 35 + ["1"] * 5
+    ci = kappa_interval(y_true, y_pred)
+    assert 0 < ci.estimate < 1
+    assert ci.lower < ci.estimate < ci.upper
+
+
+def test_kappa_interval_accord_parfait_interval_serre() -> None:
+    y = ["1"] * 50 + ["9"] * 50
+    ci = kappa_interval(y, y)
+    assert ci.estimate == pytest.approx(1.0)
+    assert ci.upper - ci.lower < 1e-9
+
+
+def test_kappa_interval_une_seule_categorie_degenere() -> None:
+    # p_e = 1 : la variance n'est pas définie et sklearn renvoie un kappa NaN.
+    ci = kappa_interval(["1"] * 50, ["1"] * 50)
+    assert math.isnan(ci.estimate)
+    assert math.isnan(ci.lower)
+    assert math.isnan(ci.upper)
+
+
+def test_kappa_interval_longueurs_incoherentes() -> None:
+    with pytest.raises(ValueError):
+        kappa_interval(["1", "9"], ["1"])
+
+
+def test_kappa_interval_series_vides() -> None:
+    with pytest.raises(ValueError):
+        kappa_interval([], [])
+
+
+# ── Design effect ─────────────────────────────────────────────────────────────
+def test_design_effect_grappes_homogenes_est_maximal() -> None:
+    # Deux copies parfaitement homogènes : toute la variance est inter-copies,
+    # l'ICC vaut 1 et le design effect atteint la taille de grappe.
+    grappes = ["A"] * 10 + ["B"] * 10
+    indicatrice = [0] * 10 + [1] * 10
+    assert design_effect(pd.Series(indicatrice), pd.Series(grappes)) == pytest.approx(
+        10.0, rel=1e-6
+    )
+
+
+def test_design_effect_sans_variance_vaut_un() -> None:
+    grappes = ["A"] * 5 + ["B"] * 5
+    assert design_effect(pd.Series([1] * 10), pd.Series(grappes)) == 1.0
+
+
+def test_design_effect_minore_a_un() -> None:
+    # Grappes volontairement mélangées : l'ICC estimé est négatif, on borne à 1.
+    grappes = ["A", "A", "B", "B", "C", "C"]
+    assert design_effect(pd.Series([0, 1, 0, 1, 0, 1]), pd.Series(grappes)) == 1.0
+
+
+def test_design_effect_propre_a_chaque_indicatrice() -> None:
+    # Deux indicatrices sur les MÊMES grappes n'ont pas le même design effect :
+    # la première est parfaitement groupée, la seconde alterne dans chaque copie.
+    grappes = pd.Series(["A"] * 4 + ["B"] * 4)
+    groupee = pd.Series([0, 0, 0, 0, 1, 1, 1, 1])
+    alternee = pd.Series([0, 1, 0, 1, 0, 1, 0, 1])
+    assert design_effect(groupee, grappes) > design_effect(alternee, grappes)
+    assert design_effect(alternee, grappes) == 1.0
+
+
+def test_design_effect_longueurs_incoherentes() -> None:
+    with pytest.raises(ValueError):
+        design_effect(pd.Series([0, 1]), pd.Series(["A"]))
+
+
+# ── Wilson corrigé du design effect ───────────────────────────────────────────
+def test_wilson_deff_elargit_intervalle() -> None:
+    brut = wilson_interval(500, 1000)
+    corrige = wilson_interval(500, 1000, deff=4.0)
+    assert corrige.estimate == brut.estimate  # la valeur ponctuelle ne change pas
+    largeur_brute = brut.upper - brut.lower
+    largeur_corrigee = corrige.upper - corrige.lower
+    # deff = 4 → intervalle élargi d'un facteur ≈ √4 = 2.
+    assert largeur_corrigee / largeur_brute == pytest.approx(2.0, rel=0.02)
+
+
+def test_wilson_deff_neutre_a_un() -> None:
+    assert wilson_interval(300, 1000, deff=1.0) == wilson_interval(300, 1000)
+
+
+def test_wilson_deff_invalide() -> None:
+    with pytest.raises(ValueError):
+        wilson_interval(500, 1000, deff=0.5)
+
+
+# ── Kappa par bootstrap de grappes ────────────────────────────────────────────
+def _df_kappa_groupe() -> pd.DataFrame:
+    """20 copies de 10 items : la moitié bien codées, l'autre systématiquement ratée."""
+    lignes = []
+    for c in range(20):
+        for i in range(10):
+            vrai = "1" if i % 2 else "9"
+            predit = vrai if c % 2 == 0 else ("9" if vrai == "1" else "1")
+            lignes.append({"copy_id": f"c{c}", "y_true": vrai, "y_pred": predit})
+    return pd.DataFrame(lignes)
+
+
+def test_kappa_clustered_encadre_estimation() -> None:
+    df = _df_kappa_groupe()
+    ci = kappa_interval_clustered(df["y_true"], df["y_pred"], df["copy_id"], n_boot=200)
+    assert ci.lower <= ci.estimate <= ci.upper
+
+
+def test_kappa_clustered_plus_large_que_delta_method() -> None:
+    # Les items étant fortement corrélés dans chaque copie, le bootstrap par
+    # grappes doit produire un intervalle plus large que la delta method, qui
+    # suppose l'indépendance.
+    df = _df_kappa_groupe()
+    grappes = kappa_interval_clustered(df["y_true"], df["y_pred"], df["copy_id"], n_boot=400)
+    naif = kappa_interval(df["y_true"], df["y_pred"])
+    assert (grappes.upper - grappes.lower) > (naif.upper - naif.lower)
+
+
+def test_kappa_clustered_reproductible() -> None:
+    df = _df_kappa_groupe()
+    args = (df["y_true"], df["y_pred"], df["copy_id"])
+    a = kappa_interval_clustered(*args, n_boot=100, seed=7)
+    b = kappa_interval_clustered(*args, n_boot=100, seed=7)
+    assert (a.lower, a.upper) == (b.lower, b.upper)
+
+
+def test_kappa_clustered_longueurs_incoherentes() -> None:
+    with pytest.raises(ValueError):
+        kappa_interval_clustered(["1", "9"], ["1", "9"], ["c1"])
 
 
 # ── Bootstrap par grappes ─────────────────────────────────────────────────────

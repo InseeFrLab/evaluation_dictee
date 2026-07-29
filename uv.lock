@@ -1414,6 +1414,12 @@ notebooks = [
     { name = "jupyterlab" },
     { name = "matplotlib" },
 ]
+website = [
+    { name = "ipykernel" },
+    { name = "matplotlib" },
+    { name = "nbclient" },
+    { name = "nbformat" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1428,9 +1434,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
+    { name = "ipykernel", marker = "extra == 'website'", specifier = ">=6.29" },
     { name = "jupyterlab", marker = "extra == 'notebooks'", specifier = ">=4.6.1" },
     { name = "langfuse", specifier = ">=4,<5" },
     { name = "matplotlib", marker = "extra == 'notebooks'", specifier = ">=3.11.1" },
+    { name = "matplotlib", marker = "extra == 'website'", specifier = ">=3.11.1" },
+    { name = "nbclient", marker = "extra == 'website'", specifier = ">=0.10" },
+    { name = "nbformat", marker = "extra == 'website'", specifier = ">=5.10" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "openai", specifier = ">=1.30" },
     { name = "pandas", specifier = ">=2.2" },
@@ -1448,7 +1458,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "vllm", marker = "extra == 'gpu'", specifier = ">=0.6" },
 ]
-provides-extras = ["gpu", "notebooks"]
+provides-extras = ["gpu", "notebooks", "website"]
 
 [package.metadata.requires-dev]
 dev = [

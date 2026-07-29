@@ -1,0 +1,397 @@
+---
+title: "Évaluation automatique de la dictée"
+subtitle: "Développer un outil IA pour aider à l'évaluation des écrits d'élèves"
+author: "Laura Gaimard"
+institute: "SSP Lab (Insee) × DEPP"
+date: today
+date-format: "DD/MM/YYYY"
+description: |
+  Présentation générale du projet d'évaluation automatique de la dictée :
+  données d'entrée, choix de conception, pipeline et résultats.
+
+lang: fr
+
+slide-tone: false      # lecture d'écran
+chalkboard: false      # touche B pour activer le tableau blanc
+jump-to-slide: true    # touche G puis numéro de slide
+mouse-wheel: false
+transition: slide
+
+custom-toc: true
+
+format:
+  insee-clair-revealjs:
+    output-file: presentation-generale.html
+
+revealjs-plugins:
+  - pointer
+  - confetti
+  - verticator
+  - multimodal
+---
+
+# Les données d'entrée {#chapitre_inputs .backgroundTitre_bleu}
+
+## De quoi part-on ? {#inputs_vue_ensemble .backgroundStandard_bleu}
+
+:::{.enteteAvecTitre}
+Les données d'entrée
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+Dans un premier temps : analyse des copies de dictées seulement (dictée 2015).
+Pourquoi ? : car le texte de référence est connu à l'avance, ce qui facilite l'évaluation
+
+Trois objets alimentent la chaîne de traitement :
+
+:::{.listeSansPuceNiveau1}
+- [**L'image de la copie** : l'imagette de la dictée manuscrite d'un élève de CM2]{.puceListFleche}
+- [**Le texte de référence** : la dictée telle qu'elle aurait dû être écrite]{.puceListFleche}
+- [**La grille de codage** : pour chaque item, le mot attendu et les fautes connues associées]{.puceListFleche}
+:::
+
+Un **item** = un mot ou un signe de ponctuation. La dictée 2015 en compte **83**,
+sur **3 469 imagettes**, toutes annotées par un expert.
+
+::::
+
+## Le corpus {#inputs_corpus .backgroundStandard_bleu}
+
+:::{.enteteAvecTitre}
+Les données d'entrée
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+| | Dictée **2015** | Dictée 2021 |
+|---|:--:|:--:|
+| Niveau | CM2 | CM2 |
+| Imagettes disponibles | **3 469** | 6 793 |
+| Copies annotées par un expert | **3 469** | 6 793 |
+| Items par copie | 83 | 83 |
+| Codes experts au total | **287 728** | 563 819 |
+
+: Le corpus « dictée » — les travaux portent pour l'instant sur **2015** {.striped}
+
+:::{.listeSansPuceNiveau1}
+- [**Toutes** les imagettes 2015 sont annotées : appariement 1 pour 1, aucune image sans code, aucun code sans image]{.puceListFleche}
+:::
+
+::::
+
+::: {.notes}
+Chiffres relevés sur le bucket S3 du projet (`dictee_2015/` et
+`resultat_dictee_2015.csv`). 3 466 copies sur 3 469 ont les 83 items renseignés.
+:::
+
+## Point de vigilance : le format des images {#inputs_images .backgroundStandard_bleu}
+
+:::{.enteteAvecTitre}
+Les données d'entrée
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::{.listeSansPuceNiveau1}
+- [Les fichiers `.png` fournis sont en réalité des **TIFF bi-level 1 bit** (compression G4, 1594 × 2044)]{.puceListFleche}
+- [Chaque pixel est **noir ou blanc** : aucune nuance de gris]{.puceListFleche}
+- [Conséquence : les **accents** se confondent avec le bruit et deviennent difficiles à lire]{.puceListFleche}
+- [Le chargement (`data/loaders.py`) **normalise systématiquement** le format en entrée]{.puceListFleche}
+:::
+
+::::
+
+# Les choix effectués {#chapitre_choix .backgroundTitre_vert}
+
+## Choix n°1 — Une grille de codage simplifiée {#choix_grille .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les choix effectués
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="48%"}
+**Grille complète (6 codes)**
+
+| Code | Signification |
+|:--:|---|
+| 1 | Orthographe correcte |
+| 3 | Erreur lexicale |
+| 4 | Erreur grammaticale |
+| 5 | Lexicale **et** grammaticale |
+| 0 | Mot absent |
+:::
+
+::: {.column width="48%"}
+**Grille simplifiée (cible principale)**
+
+| Code | Signification |
+|:--:|---|
+| 1 | Orthographe correcte |
+| 9 | Erreur (3, 4 ou 5 regroupés) |
+| 0 | Mot absent |
+:::
+
+::::
+
+**Pourquoi ?** Sur le test pilote, le regroupement 3/4/5 fait passer le kappa de
+**0,785 à 0,879** : il supprime exactement la zone où les correcteurs humains
+divergent le plus entre eux.
+
+::::
+
+## Choix n°2 — Deux approches comparées {#choix_approches .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les choix effectués
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="48%"}
+### End-to-end *(par défaut)*
+
+Un modèle multimodal reçoit image + référence + grille et produit **directement**
+le code de chaque item.
+
+- Un seul appel : simple, rapide
+- Risque de **sur-correction**
+:::
+
+::: {.column width="48%"}
+### Deux étapes
+
+1. **HTR** : transcrire l'image en texte brut, fautes comprises
+2. **Codage** : comparer ce texte à la référence
+
+- Transcription **inspectable**
+- Deux sources d'erreur cumulées
+:::
+
+::::
+
+Les deux implémentent la **même interface** `Scorer` → évaluées par **exactement
+le même code de métriques**. On compare bien l'architecture, pas deux tuyaux
+différents.
+
+::::
+
+## Choix n°3 — Conception du code {#choix_code .backgroundStandard_vert}
+
+:::{.enteteAvecTitre}
+Les choix effectués
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::{.listeSansPuceNiveau1}
+- [**Tout passe par la configuration** : un fichier YAML validé (Pydantic) = un run reproductible. Aucun chemin en dur.]{.puceListFleche}
+- [**Un score de confiance par item** : l'objectif opérationnel est de ne renvoyer vers un correcteur humain que les items incertains.]{.puceListFleche}
+- [**Règle des ratures** (tranchée par la DEPP) : on lit l'**état final**, la version corrigée par l'élève. Consigne présente dans tous les prompts.]{.puceListFleche}
+- [**Modèles open weight** servis sur le SSP Cloud (vLLM / `llm.lab`) : les données ne sortent pas.]{.puceListFleche}
+:::
+
+::::
+
+::: {.notes}
+Insister sur le livrable décisionnel : la courbe « taux de renvoi humain
+vs taux d'erreur résiduel ».
+:::
+
+# Le pipeline {#chapitre_pipeline .backgroundTitre_violet}
+
+## Vue d'ensemble {#pipeline_vue .backgroundStandard_violet}
+
+:::{.enteteAvecTitre}
+Le pipeline
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+```{mermaid}
+flowchart LR
+    A["Image<br/>(S3)"] --> S["Scorer"]
+    R["Texte de référence<br/>+ grille"] --> S
+    S --> P["Codes prédits<br/>+ confiance"]
+    P --> N["Normalisation<br/>au schéma de codage"]
+    E["Codes experts"] --> N
+    N --> M["Métriques"]
+```
+
+Un *Scorer* expose une seule méthode : `score_copy(copie, référence) → prédictions`.
+`VLMScorer` (end-to-end) et `TwoStageScorer` produisent la même sortie.
+
+::::
+
+## Le déroulé d'un run {#pipeline_run .backgroundStandard_violet}
+
+:::{.enteteAvecTitre}
+Le pipeline
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+Orchestré par `pipeline/benchmark.py` :
+
+1. **Charger les données** — imagettes depuis S3 et CSV des codes experts
+2. **Charger la grille** — mot attendu par item et texte de référence
+3. **Coder chaque copie** via le `Scorer`
+4. **Normaliser les codes** des **deux** côtés (modèle et expert), même échelle
+5. **Écrire les prédictions** au fil de l'eau dans un `.jsonl`
+6. **Calculer les métriques**
+
+::::
+
+## Robustesse et traçabilité {#pipeline_robustesse .backgroundStandard_violet}
+
+:::{.enteteAvecTitre}
+Le pipeline
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="48%"}
+### Survivre aux incidents
+
+Un run complet dure ~30 h (3 469 copies × ~30 s).
+
+- Écriture après chaque copie (`flush + fsync`)
+- **Reprise automatique** : les copies déjà traitées sont sautées
+- Les erreurs d'API sont journalisées, le run continue
+:::
+
+::: {.column width="48%"}
+### Suivi des expériences
+
+- **Langfuse** (inférence) : session → trace (une copie) → génération (un appel)
+- **MLflow** (fine-tuning GPU) : courbes d'entraînement
+:::
+
+::::
+
+::::
+
+# Les résultats {#chapitre_resultats .backgroundTitre_jaune}
+
+## Ce que l'on mesure {#resultats_metriques .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+| Famille | Métriques |
+|---|---|
+| **Codage** | Accord brut, kappa de Cohen, QWK, matrice de confusion, F1 pondéré |
+| **Transcription (HTR)** | CER, WER, taux d'illisibles, **taux de sur-correction** |
+| **Confiance** | Courbe de fiabilité, ECE |
+| **Référence** | Variabilité inter-codeurs humains (Dawid & Skene) |
+
+: La grille de métriques commune {.striped}
+
+Le point de comparaison n'est pas « 100 % » mais **l'accord entre correcteurs
+humains**.
+
+::::
+
+## Résultats — codage {#resultats_codage .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+| Approche | Copies | Accord brut | Kappa | F1 pondéré |
+|---|--:|--:|--:|--:|
+| End-to-end | — | — | — | — |
+| Deux étapes | — | — | — | — |
+| *Référence humaine* | — | — | — | — |
+
+: À compléter à l'issue du benchmark {.striped}
+
+::: {.callout-note}
+Les tableaux de la page [Résultats](../resultats.qmd) du site sont calculés
+automatiquement à partir des prédictions exportées sur S3. Le seul run disponible
+à ce jour est un échantillon de démonstration (~20 copies), **non représentatif**.
+:::
+
+::::
+
+## Résultats — transcription et confiance {#resultats_htr .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::: {.columns}
+
+::: {.column width="48%"}
+### HTR
+
+| Modèle | CER | WER | Sur-correction |
+|---|--:|--:|--:|
+| Base | — | — | — |
+| Fine-tuné | — | — | — |
+:::
+
+::: {.column width="48%"}
+### Renvoi humain
+
+Le livrable décisionnel : la courbe **taux de renvoi humain vs taux d'erreur
+résiduel**.
+
+*Graphique à insérer.*
+:::
+
+::::
+
+::::
+
+## Prochaines étapes {#resultats_suite .backgroundStandard_jaune}
+
+:::{.enteteAvecTitre}
+Les résultats
+:::
+
+::::{.rehausserContenuAvecTitre}
+
+:::{.listeSansPuceNiveau1}
+- [Constituer le jeu d'évaluation « gold » (200–300 copies)]{.puceListFleche}
+- [Lancer le benchmark HTR sur la dictée]{.puceListFleche}
+- [Lancer le benchmark de codage (end-to-end vs deux étapes)]{.puceListFleche}
+- [Fine-tuning LoRA sur les ~3 000 copies annotées]{.puceListFleche}
+- [Étendre à la production écrite libre (pas de texte de référence)]{.puceListFleche}
+:::
+
+::::
+
+## {#pageDeFin data-menu-title="Page finale" .unnumbered .backgroundPageFinale}
+
+:::: {.columns .coordonneesFinales}
+
+::: {.column .gauche .coordonnees width=30%}
+- Laura Gaimard
+- [SSP Lab]{.ligneBlancheApres}
+- [Insee]{.ligneBlancheApres}
+- laura.gaimard@insee.fr
+:::
+
+::: {.column .coordonnees .milieu width=30%}
+:::
+
+::: {.column .coordonnees .droite width=30%}
+:::
+
+::::

@@ -1,0 +1,16 @@
+---
+title: "Présentations"
+subtitle: "Les supports de présentation du projet"
+listing:
+  id: presentations
+  contents: cards
+  sort: "order desc"
+  categories: false
+  template: style/listing-grid.ejs
+page-layout: full
+toc: false
+---
+
+::: {#presentations}
+:::
+

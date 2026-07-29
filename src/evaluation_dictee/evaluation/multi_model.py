@@ -7,9 +7,9 @@ de N=1 à N quelconque.
 
 from __future__ import annotations
 
-from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from evaluation_dictee.evaluation.report import load_predictions
@@ -83,14 +83,17 @@ def agreement_per_item(df_multi: pd.DataFrame) -> pd.DataFrame:
 
     out = df_multi.copy()
 
-    def _modal_and_count(row):
-        counts = Counter(row[c] for c in pred_cols)
-        modal, n_acc = counts.most_common(1)[0]
-        return pd.Series({"modal_pred": modal, "n_accord_modeles": n_acc})
-
-    modal_df = out[pred_cols].apply(_modal_and_count, axis=1)
-    out["modal_pred"] = modal_df["modal_pred"]
-    out["n_accord_modeles"] = modal_df["n_accord_modeles"].astype(int)
+    # Vote majoritaire vectorisé : `effectifs[:, i]` compte les runs qui prédisent
+    # la même chose que le run i, ligne par ligne. Le premier maximum gagne, ce qui
+    # départage les ex æquo par ordre d'apparition (comme Counter.most_common).
+    # Version vectorisée indispensable ici : un apply(axis=1) sur les ~290 000
+    # items d'un run complet coûte une minute, contre une fraction de seconde ici.
+    preds = out[pred_cols].to_numpy(dtype=object)
+    effectifs = np.column_stack([(preds == preds[:, [i]]).sum(axis=1) for i in range(n_modeles)])
+    lignes = np.arange(len(preds))
+    gagnant = effectifs.argmax(axis=1) if len(preds) else lignes
+    out["modal_pred"] = preds[lignes, gagnant]
+    out["n_accord_modeles"] = effectifs[lignes, gagnant].astype(int)
     out["n_modeles"] = n_modeles
     out["unanimite"] = out["n_accord_modeles"] == n_modeles
 

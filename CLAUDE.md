@@ -160,6 +160,14 @@ uv run mypy src                 # typage
 
 # Lancer un benchmark à partir d'une config
 uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
+
+# Densité d'encre de chaque copie (détection des copies vierges, sans appel modèle).
+# Documente `data.blank_ink_threshold` et alimente la page « Écarts » du site.
+uv run scripts/compute_ink_ratios.py --config configs/scoring/dictee_end2end.yaml --export
+
+# Rendre le site Quarto (les pages recalculent leurs figures au rendu)
+uv sync --extra website
+uv run quarto render website
 ```
 
 ### Runs longs — utiliser screen ou nohup

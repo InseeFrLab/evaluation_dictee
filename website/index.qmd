@@ -73,7 +73,8 @@ Ces deux approches sont détaillées dans la page **[Résultats](resultats.qmd)*
 | Page | Ce que vous y trouverez |
 |------|-------------------------|
 | **[Architecture](architecture.qmd)** | Comment le projet est organisé : du scan à la métrique, brique par brique. |
-| **[Résultats](resultats.qmd)** | Les deux approches en détail, et les tableaux de comparaison (à compléter). |
+| **[Résultats](resultats.qmd)** | Les deux approches en détail, les tableaux de comparaison et l'analyse complète du benchmark. |
+| **[Écarts IA – humain](ecarts.qmd)** | Les 20 copies où le modèle et l'annotateur expert divergent le plus, décortiquées item par item. |
 | **[Évaluation & métriques](evaluation.qmd)** | Chaque métrique expliquée : ce qu'elle mesure et pourquoi. |
 | **[Fine-tuning](finetuning.qmd)** | Spécialiser un modèle à l'écriture d'enfants. |
 
