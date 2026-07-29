@@ -11,14 +11,16 @@ Cette page permet l'installation et la configuration du projet d'évaluation aut
 ## A - Clés langfuse
 
 Il faut :
-    - D'abord se connecter sur https://langfuse.lab.sspcloud.fr/, 
-    - puis cliquer sur **"Go to project"** sur le projet **evaluation-ecrits-depp**.
+
+- D'abord se connecter sur https://langfuse.lab.sspcloud.fr/, 
+- puis cliquer sur **"Go to project"** sur le projet **evaluation-ecrits-depp**.
 
 Ensuite, il faut (voir la capture d'écran ci-dessous) : 
-    - cliquer sur 1 - **"Settings"** (en bas à gauche de l'interface), 
-    - puis 2 - **"API keys"**, 
-    - puis sur 3 - **"Create new API keys"** 
-    - et enfin sur **"Create API keys"**
+
+- cliquer sur 1 - **"Settings"** (en bas à gauche de l'interface), 
+- puis 2 - **"API keys"**, 
+- puis sur 3 - **"Create new API keys"** 
+- et enfin sur **"Create API keys"**
 
 ![Copie d'écran de l'interface langfuse](/img/langfuse_key.png)
 
@@ -27,15 +29,17 @@ Une fois les trois varaibles d'environnement récupérés, il faut les ajouter d
 ## B - Clés llm.lab 
 
 Il faut :
-    - D'abord se connecter sur https://llm.lab.sspcloud.fr/,
-    - puis cliquer sur l'icone en haut à droite, puis sur **Réglages**
+
+- D'abord se connecter sur https://llm.lab.sspcloud.fr/,
+- puis cliquer sur l'icone en haut à droite, puis sur **Réglages**
 
 ![Copie d'écran de l'interface llm.lab](/img/key_llmlab1.png)
 
 Sur l'interface des réglages, il faut :
-    - Cliquer sur l'onglet "Compte"
-    - Dans la partie **Clés d'API**, cliquer sur **afficher**
-    - Récupérer la clé d'API liée à la session llm.lab 
+
+- Cliquer sur l'onglet "Compte"
+- Dans la partie **Clés d'API**, cliquer sur **afficher**
+- Récupérer la clé d'API liée à la session llm.lab 
 
 ![Copie d'écran de l'interface llm.lab](/img/key_llmlab2.png)
 
@@ -50,10 +54,11 @@ L'endpoint d'accès à l'API de llm.lab est déjà connu. Il s'agit de https://l
 Un fichier de secrets est une sorte de coffre fort comportant les variables d'environnement confidentielles, qui ne peuvent pas être diffusées sur Github (ou n'importe quelle autre forge logicielle). Par conséquent, elles ne peuvent pas être ajoutées en *dur* dans les scripts du projet.
 
 Pour créer le fichier de secrets :
-    - Il faut se connecter sur le SSP Cloud (https://datalab.sspcloud.fr/)
-    - Aller dans l'onglet **Mes secrets**
-    - Cliquer sur le bouton **"Nouveau secret"** et renommer le fichier avec le nom souhaité
-    - Cliquer sur ce nouveau fichier
+
+- Il faut se connecter sur le SSP Cloud (https://datalab.sspcloud.fr/)
+- Aller dans l'onglet **Mes secrets**
+- Cliquer sur le bouton **"Nouveau secret"** et renommer le fichier avec le nom souhaité
+- Cliquer sur ce nouveau fichier
 
 ![Copie d'écran du SSP Cloud](/img/create_secret.png)
 
@@ -64,8 +69,9 @@ Une fois le fichier des secret ouvert, toutes les variables d'environnement conf
 ## B - Configuration du service VSCode
 
 Pour exécuter les scripts liés au projet, il faut ouvrir un service VSCode, avec python préinstallé. Ici, pas besoin de GPU (cartes graphiques), donc un simple service **Vscode-python** suffit. Pour cela, sur le SSPCloud :
-    - Aller dans l'onglet **Catalogue de services**
-    - Lancer un service **VSCode-python**
+
+- Aller dans l'onglet **Catalogue de services**
+- Lancer un service **VSCode-python**
 
 ::: {.callout-warning appearance="simple"}
 Pour l'entrainement HTR (Handwritten Text Recognition), il faut ouvrir un service comportant une GPU. Pour cela, il faut sélectionner le service **VSCode-python-gpu** dans le catalogue des services.
@@ -76,8 +82,9 @@ Une fenête de configuration s'affiche, qui est déjà pré-remplie avec plusieu
 On considère ici que le paramétrage GIT a déjà été effectué. Si ce n'est pas le cas, il faut suivre ce [tuto](https://www.sspcloud.fr/document?path=SSPCloud%E2%90%A3Documentation%E2%80%BAUsing%E2%90%A3the%E2%90%A3Datalab%E2%80%BAVersion%E2%90%A3control) 
 
 Il faut :
-    - Aller dans l'onglet **Vault**
-    - Ajouter le nom du fichier comme variable de **Secret**
+
+- Aller dans l'onglet **Vault**
+- Ajouter le nom du fichier comme variable de **Secret**
 
 Maintenant, la configuration est terminée, vous pouvez **lancer** le service.
 
