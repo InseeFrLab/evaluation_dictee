@@ -74,11 +74,25 @@ except ImportError as exc:  # noqa: BLE001 — la page doit rester rendable
 #: hors ligne : `export S3_PREDICTIONS_PREFIX=/chemin/vers/predictions`.
 PREFIX = os.environ.get("S3_PREDICTIONS_PREFIX", "s3://projet-production-ecrits-depp/predictions")
 
-#: Runs comparés côte à côte, dans l'ordre d'affichage : libellé → nom de run.
+#: Nom de base des runs comparés côte à côte, dans l'ordre d'affichage :
+#: libellé → champ `name` du YAML du run.
+RUNS_BASE: dict[str, str] = {
+    "end-to-end": "dictee_end2end",
+    "two-stage": "dictee_two_stage",
+}
+
+#: Modèle dont on affiche les résultats. Le benchmark suffixe TOUJOURS ses sorties
+#: par le nom du modèle (`<name>_<modele>_predictions.jsonl`, cf.
+#: `config.run_output_name`) : le site doit donc nommer le modèle pour retrouver
+#: le fichier. À défaut de correspondance exacte, `_resoudre_run` retombe sur le
+#: fichier réellement exporté pour ce run (voir plus bas).
+MODELE = os.environ.get("RESULTATS_MODELE", "gemma4-26b-moe")
+
+#: Runs comparés côte à côte : libellé → nom de run (base + modèle).
 #: Surchargeables pour comparer d'autres runs sans toucher aux pages.
 RUNS: dict[str, str] = {
-    "end-to-end": os.environ.get("RESULTATS_RUN_END_TO_END", "dictee_end2end"),
-    "two-stage": os.environ.get("RESULTATS_RUN_TWO_STAGE", "dictee_two_stage"),
+    "end-to-end": os.environ.get("RESULTATS_RUN_END_TO_END", f"dictee_end2end_{MODELE}"),
+    "two-stage": os.environ.get("RESULTATS_RUN_TWO_STAGE", f"dictee_two_stage_{MODELE}"),
 }
 
 #: Run servant de référence quand une analyse en exige un seul (classement des
@@ -243,10 +257,110 @@ class Run:
         """Nombre de lignes item × copie."""
         return len(self.df)
 
+    @property
+    def modele(self) -> str:
+        """Modèle(s) du run, lu dans le suffixe de son nom (« — » si non nommé).
+
+        Le nom du modèle ne figure PAS dans les lignes du JSONL : la seule trace
+        portée par les prédictions exportées est ce suffixe, posé par
+        `config.run_output_name`. Un run two_stage à deux modèles distincts en
+        porte deux, séparés par `_` (étape 1 puis étape 2).
+        """
+        base = RUNS_BASE.get(self.label, "")
+        if base and self.nom.startswith(f"{base}_"):
+            return self.nom[len(base) + 1 :]
+        return "—"
+
+
+#: Suffixes des fichiers exportés (cf. `utils/s3_export.py`). Le suffixe HTR se
+#: termine par celui du scoring : ne jamais tester l'un sans écarter l'autre.
+SUFFIXE_SCORING = "_predictions.jsonl"
+SUFFIXE_HTR = "_htr_predictions.jsonl"
+
 
 def _chemin(nom_run: str) -> str:
     """URI du JSONL de prédictions d'un run."""
-    return PREFIX.rstrip("/") + "/" + nom_run + "_predictions.jsonl"
+    return PREFIX.rstrip("/") + "/" + nom_run + SUFFIXE_SCORING
+
+
+#: Nom des runs de scoring exportés à côté de `PREFIX`, listés une seule fois.
+_EXPORTES: list[str] | None = None
+
+
+def _noms_exportes() -> list[str]:
+    """Noms des runs de scoring exportés à côté de `PREFIX`, triés.
+
+    On liste le RÉPERTOIRE, jamais un motif `<base>_*` : sur S3, un glob par
+    préfixe fait mettre en cache par s3fs une vue *partielle* du répertoire,
+    après quoi les autres fichiers deviennent invisibles — y compris pour
+    `load_predictions`, qui échouerait alors sur un fichier bien présent.
+
+    Returns:
+        Les noms de runs (suffixe de modèle compris, `_predictions.jsonl` ôté),
+        hors runs HTR. Liste vide si le préfixe est injoignable.
+    """
+    global _EXPORTES
+    if _EXPORTES is None:
+        import fsspec
+
+        try:
+            fs, _, _ = fsspec.get_fs_token_paths(PREFIX)
+            entrees = [str(e) for e in fs.ls(PREFIX.rstrip("/"), detail=False)]
+        except Exception:  # noqa: BLE001 — la page doit rester rendable
+            entrees = []
+        _EXPORTES = sorted(
+            Path(e).name.removesuffix(SUFFIXE_SCORING)
+            for e in entrees
+            if e.endswith(SUFFIXE_SCORING) and not e.endswith(SUFFIXE_HTR)
+        )
+    return _EXPORTES
+
+
+def _runs_exportes(base: str) -> list[str]:
+    """Runs exportés pour un run de base, tous modèles confondus.
+
+    Args:
+        base: champ `name` du run (ex. `dictee_end2end`).
+
+    Returns:
+        Les noms de runs exportés qui portent ce `name`, triés.
+    """
+    return [nom for nom in _noms_exportes() if nom == base or nom.startswith(f"{base}_")]
+
+
+def _resoudre_run(label: str, nom: str) -> str:
+    """Nom de run réellement exporté, à défaut de celui attendu.
+
+    Le modèle fait partie du nom de fichier : un site configuré pour
+    `gemma4-26b-moe` ne trouve rien si le run exporté est un `qwen3-6-35b-moe`.
+    Plutôt que d'afficher une page vide, on cherche ce qui a été exporté pour ce
+    run et on signale la substitution dans `NOTES`.
+
+    Args:
+        label: libellé du run (clé de `RUNS`).
+        nom: nom de run attendu (base + modèle).
+
+    Returns:
+        Le nom attendu s'il est exporté, sinon le seul (ou le premier) nom
+        exporté pour ce run de base, sinon le nom attendu inchangé.
+    """
+    base = RUNS_BASE.get(label, "")
+    if not base:
+        return nom
+    exportes = _runs_exportes(base)
+    if not exportes or nom in exportes:
+        return nom
+    choisi = exportes[0]
+    detail = (
+        "" if len(exportes) == 1 else f" ({len(exportes)} runs exportés : {', '.join(exportes)})"
+    )
+    NOTES.append(
+        f"`{nom}` n'est pas exporté : les chiffres « {label} » portent sur "
+        f"`{choisi}`{detail}. Fixer `RESULTATS_MODELE` ou "
+        f"`RESULTATS_RUN_{'END_TO_END' if label == 'end-to-end' else 'TWO_STAGE'}` "
+        "pour choisir explicitement."
+    )
+    return choisi
 
 
 def charger_runs() -> dict[str, Run]:
@@ -262,6 +376,7 @@ def charger_runs() -> dict[str, Run]:
     for i, (label, nom) in enumerate(RUNS.items()):
         if not nom:
             continue
+        nom = _resoudre_run(label, nom)
         try:
             df = load_predictions(_chemin(nom))
         except Exception as exc:  # noqa: BLE001 — la page doit rester rendable

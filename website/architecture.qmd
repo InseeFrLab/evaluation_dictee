@@ -40,6 +40,177 @@ n'impliquerait de toucher ni les métriques, ni le suivi, ni les notebooks.
 
 ![Schéma d'appel au LLM](/img/call_llm.png)
 
+## Liste des commandes à exécuter pour lancer l'évaluation des copies
+
+Toutes les tâches suivent le même schéma : **un script, un fichier YAML**. Rien
+n'est à passer en ligne de commande sauf le chemin de la config — et, pour le
+scoring, le nom du modèle si l'on veut le surcharger sans éditer le YAML.
+
+| Tâche | Commande | Sortie |
+|---|---|---|
+| Évaluation **end-to-end** | `run_benchmark.py --config configs/scoring/dictee_end2end.yaml` | `data/processed/dictee_end2end_<modèle>_predictions.jsonl` |
+| Évaluation **deux étapes** | `run_benchmark.py --config configs/scoring/dictee_two_stage.yaml` | `data/processed/dictee_two_stage_<modèle>_predictions.jsonl` |
+| **Transcription HTR** seule | `run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml` | `data/processed/htr_REFERENCE_htr_predictions.jsonl` |
+| **Export S3** | `export_predictions.py --config <yaml du run>` | `$S3_PREDICTIONS_PREFIX/<run>_<modèle>_predictions.jsonl` |
+| **Fine-tuning** HTR | `finetune_htr_scoledit.py --config configs/finetune/finetune_REFERENCE.yaml` | `checkpoints/<name>/` (adaptateur LoRA) |
+| Densité d'encre (copies vierges) | `compute_ink_ratios.py --config <yaml> --export` | `data/processed/<corpus>_ink_ratios.csv` |
+
+### 0. Préalable, une fois par service
+
+```bash
+cd ~/work/evaluation_dictee
+uv sync                                     # installe tout, groupe dev inclus
+mkdir -p logs                               # les lancements nohup en ont besoin
+```
+
+Les accès S3 sont injectés par Onyxia ; le token `llm.lab` vient du Vault ou du
+fichier `.env`. Vérifier que les deux répondent avant de lancer un run long :
+
+```bash
+uv run python -c "from evaluation_dictee.data.loaders import load_labels; \
+print(len(load_labels('s3://projet-production-ecrits-depp/resultat_dictee_2015.csv')), 'copies')"
+```
+
+### 1. Évaluation des copies — end-to-end (approche 2)
+
+Un VLM lit l'image **et** code en une passe. C'est l'approche par défaut.
+
+```bash
+# Modèle inscrit dans le YAML :
+uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml
+
+# Ou en surchargeant le modèle, sans éditer le YAML :
+uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml \
+      --model-name gemma4-26b-moe
+```
+
+### 2. Évaluation des copies — deux étapes (approche 1)
+
+Étape 1 : un VLM transcrit l'image. Étape 2 : un modèle texte code la
+transcription. `--model-stage2-name` ne vaut que pour cette approche.
+
+```bash
+# Même modèle aux deux étapes (valeurs du YAML) :
+uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml
+
+# Croiser deux modèles : lecture par l'un, jugement par l'autre.
+uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml \
+      --model-name qwen3-6-35b-moe --model-stage2-name gemma4-26b-moe
+```
+
+::: {.callout-important}
+## Le nom du fichier de sortie porte toujours le(s) modèle(s)
+
+`dictee_two_stage_qwen3-6-35b-moe_predictions.jsonl`, et
+`…_qwen3-6-35b-moe_gemma4-26b-moe_…` quand les deux étapes diffèrent. Deux
+modèles n'écrasent donc jamais le même checkpoint. Le modèle est aussi inscrit
+dans **chaque ligne** du JSONL (champs `model` et `model_stage2`), donc
+l'information survit à une fusion, un renommage ou un export.
+
+Corollaire : **un seul run à la fois par fichier de sortie.** Un second run
+visant le même fichier échoue aussitôt sur le verrou `<sortie>.lock`. Deux runs
+qui écrivent le même JSONL dupliquent les copies et faussent les métriques.
+:::
+
+### 3. Transcription HTR seule (corpus Scoledit)
+
+Mesure la **fidélité de lecture** (CER/WER) indépendamment du codage. Le modèle
+se change uniquement dans le YAML : ce script n'accepte pas `--model-name`.
+
+```bash
+uv run scripts/run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml
+```
+
+::: {.callout-warning}
+Contrairement au scoring, la sortie HTR est nommée d'après le seul champ `name`
+et le fichier est **écrasé** à chaque lancement (pas de reprise). Évaluer deux
+modèles impose donc de changer `name` dans le YAML entre les deux runs, sinon le
+second efface le premier.
+:::
+
+### 4. Export des prédictions sur S3
+
+Le pipeline écrit en local (append + `fsync`, pour la reprise) ; l'export vers S3
+se fait **une fois le run terminé**, pour que notebooks et site Quarto se
+relancent sans réexécuter le pipeline.
+
+```bash
+# Scoring — le nom de fichier, modèle inclus, est résolu depuis le YAML :
+uv run scripts/export_predictions.py --config configs/scoring/dictee_end2end.yaml
+
+# Transcription HTR :
+uv run scripts/export_predictions.py --config configs/htr/htr_REFERENCE.yaml --htr
+
+# Par nom de run explicite (utile pour un fichier renommé à la main) :
+uv run scripts/export_predictions.py --run-name dictee_end2end_qwen3-6-35b-moe
+
+# Équivalent via la CLI installée :
+eval-ecrit export configs/scoring/dictee_end2end.yaml
+```
+
+Destination par défaut : `$S3_PREDICTIONS_PREFIX`
+(`s3://projet-production-ecrits-depp/predictions`), surchargeable par
+`--dest-prefix`. Aucune donnée d'élève n'est jamais commitée dans Git.
+
+### 5. Fine-tuning HTR (QLoRA) — nécessite un GPU H100
+
+Spécialise un VLM sur l'écriture d'enfants (Scoledit, CP→CM2). Sortie : un
+adaptateur LoRA léger, à charger par-dessus le modèle de base. Le suivi passe par
+**MLflow**, et non Langfuse.
+
+```bash
+uv run scripts/finetune_htr_scoledit.py --config configs/finetune/finetune_REFERENCE.yaml
+```
+
+Pour un essai de bout en bout à coût réduit, mettre `data.limit: 100` dans le
+YAML avant de lancer l'entraînement complet.
+
+### 6. Annexe — densité d'encre (détection des copies vierges)
+
+Sans aucun appel modèle. Documente le seuil `data.blank_ink_threshold` et alimente
+la page « Écarts » du site.
+
+```bash
+uv run scripts/compute_ink_ratios.py --config configs/scoring/dictee_end2end.yaml --export
+```
+
+### Lancer un run long sans le perdre
+
+Un benchmark complet (3469 copies) dure de longues heures : **jamais dans le
+terminal du navigateur sans protection**, une mise en veille ou un onglet fermé
+tuerait le process.
+
+```bash
+# 1. Vérifier qu'aucun run ne tourne déjà (le verrou le bloquerait, autant le voir avant) :
+ps -ef | grep run_benchmark | grep -v grep
+screen -ls
+
+# 2. Lancer, avec UN LOG DISTINCT PAR RUN :
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml \
+      > logs/dictee_end2end.log 2>&1 &
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml \
+      > logs/dictee_two_stage.log 2>&1 &
+
+# 3. Vérifier que la reprise a bien pris (sinon le run repart de zéro) :
+head -20 logs/dictee_end2end.log | grep -i "reprise\|copies au total"
+
+# 4. Suivre :
+tail -f logs/dictee_end2end.log
+watch -n 5 "wc -l data/processed/dictee_end2end_qwen3-6-35b-moe_predictions.jsonl"
+
+# 5. Arrêter (le checkpointing conserve tout sauf la copie en cours) :
+pkill -f "run_benchmark.py --config configs/scoring/dictee_end2end.yaml"
+```
+
+::: {.callout-note}
+## Ne pas piloter un run par un fichier `.pid`
+
+`nohup uv run … &` crée **deux** process : le wrapper `uv run` et le vrai
+`python3 scripts/run_benchmark.py`. `echo $!` ne capture que le wrapper ; un
+`kill` sur ce seul PID laisse l'enfant Python vivant en orphelin, qui continue
+d'écrire dans le JSONL. `pkill -f` sur le motif de la config cible les deux.
+:::
+
 ## Le déroulé d'un run
 
 Le module `pipeline/benchmark.py` orchestre chaque run :

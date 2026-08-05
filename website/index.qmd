@@ -20,7 +20,7 @@ coûteuse (5 à 10 minutes par copie), et donc difficile à passer à l'échelle
 **La question du projet** : est-ce que l'IA peut être un nouvel outil permettant d'accélérer
 l'évaluation des copies et être cfomplémentaire à la correction manuelle faite par les professeurs ? 
 
-## La tâche, concrètement
+## La tâche
 
 Chaque **item** (un mot ou un signe de ponctuation) écrit par l'élève reçoit un **code**.
 Dans un premier temps, la cible principale du projet est une **grille simplifiée** à trois modalités :

@@ -83,6 +83,13 @@ if not RUNS:
     print("Vérifier `S3_PREDICTIONS_PREFIX` et l'export des prédictions.")
     print(":::")
     print(A.bloc_notes())
+else:
+    # Le modèle fait partie du nom du run exporté : on l'affiche, sinon rien ne
+    # dit sur quelles prédictions portent les écarts détaillés plus bas.
+    detail = " ; ".join(f"**{label}** — modèle `{r.modele}`" for label, r in RUNS.items())
+    print('::: {.callout-note appearance="simple"}')
+    print(f"Runs analysés — {detail}.")
+    print(":::")
 ```
 
 ## Comment les copies sont classées

@@ -34,8 +34,8 @@ REF = A.RUN_REFERENCE if A.RUN_REFERENCE in RUNS else (next(iter(RUNS)) if RUNS 
 #| output: asis
 if RUNS:
     effectifs = " ; ".join(
-        f"**{label}** (`{r.nom}`) : {A.milliers(r.n_copies)} copies × "
-        f"{r.df['item_id'].nunique()} items"
+        f"**{label}** — modèle `{r.modele}` — {A.milliers(r.n_copies)} copies × "
+        f"{r.df['item_id'].nunique()} items (`{r.nom}`)"
         for label, r in RUNS.items()
     )
     print('::: {.callout-note appearance="simple"}')
@@ -1041,18 +1041,27 @@ uv sync --extra website
 uv run quarto render website        # ou : uv run quarto preview website
 ```
 
-**4. Choisir les runs affichés** via des variables d'environnement (par défaut
-`dictee_end2end` et `dictee_two_stage`) :
+**4. Choisir les runs affichés** via des variables d'environnement. Le nom du
+modèle fait partie du nom de fichier exporté
+(`<run>_<modèle>_predictions.jsonl`) : changer de modèle se fait donc avec la
+seule variable `RESULTATS_MODELE`.
 
 ```bash
-export RESULTATS_RUN_END_TO_END=dictee_end2end
-export RESULTATS_RUN_TWO_STAGE=dictee_two_stage
+export RESULTATS_MODELE=gemma4-26b-moe        # modèle affiché (défaut)
 export RESULTATS_RUN_REFERENCE="end-to-end"   # run de référence des classements
+# Nom de run complet, si le suffixe de modèle ne suffit pas (two_stage à deux
+# modèles distincts, run renommé…) :
+export RESULTATS_RUN_END_TO_END=dictee_end2end_gemma4-26b-moe
+export RESULTATS_RUN_TWO_STAGE=dictee_two_stage_qwen3-6-35b-moe_gemma4-26b-moe
 export RESULTATS_RUN_HTR_BASE=htr_gemma4_base
 export RESULTATS_RUN_HTR_FINETUNE=htr_gemma4_finetune
 # Rendu hors ligne, depuis un dossier local de prédictions :
 export S3_PREDICTIONS_PREFIX=/chemin/vers/predictions
 ```
+
+Si le run demandé n'est pas exporté, le site retombe sur le run réellement
+présent pour cette approche et le signale dans l'encadré de fin de page, plutôt
+que d'afficher des « — ».
 
 L'exploration interactive (au-delà de ce que le site affiche) se fait dans les
 **notebooks** :
