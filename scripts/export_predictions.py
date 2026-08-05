@@ -19,19 +19,11 @@ from __future__ import annotations
 
 import argparse
 
-import yaml
-
 from evaluation_dictee.config import Secrets
 from evaluation_dictee.utils.logging import get_logger
-from evaluation_dictee.utils.s3_export import export_run
+from evaluation_dictee.utils.s3_export import export_run, resolve_run_name
 
 logger = get_logger(__name__)
-
-
-def _run_name_from_config(config_path: str) -> str:
-    """Lit le champ `name` d'un YAML de run (scoring ou HTR)."""
-    with open(config_path, encoding="utf-8") as f:
-        return str(yaml.safe_load(f)["name"])
 
 
 def main() -> None:
@@ -59,7 +51,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    run_name = args.run_name or _run_name_from_config(args.config)
+    run_name = args.run_name or resolve_run_name(args.config, htr=args.htr)
     dest_prefix = args.dest_prefix or Secrets().s3_predictions_prefix
 
     dest = export_run(run_name, dest_prefix, source_dir=args.source_dir, htr=args.htr)

@@ -6,15 +6,18 @@ Prédictions écrites dans data/processed/<run_name>_predictions.jsonl (une lign
 from __future__ import annotations
 
 import contextvars
+import fcntl
 import json
 import os
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from tqdm import tqdm
 
-from evaluation_dictee.config import ExperimentConfig
+from evaluation_dictee.config import ExperimentConfig, run_output_name
 from evaluation_dictee.data import reference
 from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.data.loaders import Copy, ink_ratio, load_dataset, load_image
@@ -51,6 +54,46 @@ class _CopyOutcome:
     error: str = ""  # message d'erreur (status "failed")
     n_attempts: int = 1  # nombre d'essais (status "non_transcribed")
     blank: bool = False  # copie vierge auto-codée "0" (status "ok")
+
+
+@contextmanager
+def _single_writer(out_path: Path) -> Iterator[None]:
+    """Interdit deux runs concurrents sur le même fichier de prédictions.
+
+    Deux process qui appendent le même JSONL se dupliquent le travail et écrivent
+    les mêmes copies deux fois (métriques calculées sur des doublons), voire des
+    lignes entrelacées si une écriture dépasse la taille d'écriture atomique du
+    noyau. Le verrou est un `flock` sur `<sortie>.lock` : le noyau le relâche tout
+    seul si le process meurt, donc un crash ne laisse pas de verrou fantôme.
+
+    Args:
+        out_path: Chemin du fichier de prédictions à protéger.
+
+    Yields:
+        Rien ; le verrou est tenu pendant toute la durée du bloc.
+
+    Raises:
+        RuntimeError: Si un autre process écrit déjà dans ce fichier.
+    """
+    lock_path = out_path.parent / f"{out_path.name}.lock"
+    with open(lock_path, "w", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Un autre run écrit déjà dans {out_path.name} (verrou {lock_path.name}).\n"
+                "Deux runs sur le même fichier dupliquent les copies et faussent les "
+                "métriques. Vérifier les process en cours :\n"
+                "  ps -ef | grep run_benchmark\n"
+                "Pour lancer un run concurrent volontairement, changer `name` dans le "
+                "YAML ou passer --model-name (le fichier de sortie sera distinct)."
+            ) from exc
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def _load_processed_copy_ids(predictions_path: Path) -> set[str]:
@@ -134,8 +177,12 @@ def run_benchmark(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{config.name}_{config.model.name}_predictions.jsonl"
-    failed_path = output_dir / f"{config.name}_{config.model.name}_failed_copies.txt"
+    # `run_output_name` slugifie le(s) nom(s) de modèle et n'ajoute le suffixe qu'une
+    # fois : un nom type "Qwen/Qwen2.5-VL-7B" ne casse pas le chemin, et un lancement
+    # avec --model-name ne produit plus un suffixe dupliqué (donc pas de checkpoint orphelin).
+    run_name = run_output_name(config)
+    out_path = output_dir / f"{run_name}_predictions.jsonl"
+    failed_path = output_dir / f"{run_name}_failed_copies.txt"
 
     processed = _load_processed_copy_ids(out_path)
     if processed:
@@ -160,6 +207,12 @@ def run_benchmark(
     non_transcrites: list[str] = []
     failed_copies: list[tuple[str, str]] = []  # (copy_id, message d'erreur)
     blank_copies: list[str] = []  # copies vierges auto-codées "0"
+
+    # Modèle(s) inscrits dans CHAQUE ligne du JSONL, et pas seulement dans le nom du
+    # fichier : c'est la seule façon de savoir quel modèle a produit une prédiction
+    # après une fusion, un renommage ou un export S3. `model_stage2` vaut None en end_to_end.
+    model_name = config.model.name
+    model_stage2_name = config.model_stage2.name if config.model_stage2 is not None else None
 
     def _score_one(copy: Copy) -> _CopyOutcome:
         """Score une copie et prépare ses lignes JSONL (exécuté dans un thread worker).
@@ -230,6 +283,8 @@ def run_benchmark(
                         "comparaison": pred.comparaison if pred else None,
                         "raw_transcription": prediction.raw_transcription,
                         "approach": config.approach,
+                        "model": model_name,
+                        "model_stage2": model_stage2_name,
                         "blank": is_blank,
                         "ink_ratio": densite_encre,
                     }
@@ -275,8 +330,10 @@ def run_benchmark(
             f_pred.flush()  # type: ignore[attr-defined]
             os.fsync(f_pred.fileno())  # type: ignore[attr-defined]
 
-    # Mode APPEND : conserve les copies déjà traitées lors d'une reprise.
-    with open(out_path, "a", encoding="utf-8") as f_pred:
+    # Mode APPEND : conserve les copies déjà traitées lors d'une reprise. Le verrou est
+    # pris AVANT la première écriture : un second run sur le même fichier échoue tout de
+    # suite (LOCK_NB) au lieu d'y dupliquer des copies.
+    with _single_writer(out_path), open(out_path, "a", encoding="utf-8") as f_pred:
         desc = f"Évaluation ({config.name}, {workers} en parallèle)"
         if workers <= 1:
             # Chemin séquentiel (comportement historique), sans thread ni contexte copié.
@@ -313,6 +370,12 @@ def run_benchmark(
     confidences: list[float | None] = []
     item_ids: list[str] = []
     copy_ids: list[str] = []
+    # Déduplication par (copy_id, item_id), la DERNIÈRE occurrence gagne. Un fichier
+    # écrit par deux runs concurrents (ou repris après un crash à mi-copie) contient la
+    # même copie plusieurs fois ; sans cette passe, chaque item dupliqué pèse double
+    # dans l'accord brut et le kappa.
+    par_cle: dict[tuple[str, str], dict] = {}
+    n_valides = 0
     with open(out_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -322,11 +385,25 @@ def run_benchmark(
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            y_true.append(rec["y_true"])
-            y_pred.append(rec["y_pred"])
-            confidences.append(rec.get("confidence"))
-            item_ids.append(rec["item_id"])
-            copy_ids.append(rec["copy_id"])
+            n_valides += 1
+            par_cle[(rec["copy_id"], rec["item_id"])] = rec
+
+    n_lignes_dupliquees = n_valides - len(par_cle)
+    if n_lignes_dupliquees > 0:
+        logger.warning(
+            "%d ligne(s) dupliquée(s) dans %s (même copy_id + item_id) : ignorées pour "
+            "les métriques, seule la dernière occurrence compte. Cause probable : deux "
+            "runs concurrents sur le même fichier avant l'ajout du verrou.",
+            n_lignes_dupliquees,
+            out_path.name,
+        )
+
+    for rec in par_cle.values():
+        y_true.append(rec["y_true"])
+        y_pred.append(rec["y_pred"])
+        confidences.append(rec.get("confidence"))
+        item_ids.append(rec["item_id"])
+        copy_ids.append(rec["copy_id"])
     # Garde-fou : après normalisation, un code hors de l'alphabet attendu signale une
     # incohérence (prétraitement expert oublié, prompt non aligné sur le schéma).
     attendus = reference.allowed_codes(scheme)

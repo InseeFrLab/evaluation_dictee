@@ -129,6 +129,38 @@ def _slugify_model_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]+", "-", name).strip("-.")
 
 
+def run_output_name(config: ExperimentConfig) -> str:
+    """Nom de base des fichiers de sortie d'un run : `name` + modèle(s), sans doublon.
+
+    Source unique de vérité pour nommer `<...>_predictions.jsonl` et
+    `<...>_failed_copies.txt`. Le(s) modèle(s) figurent TOUJOURS dans le nom, que
+    le run soit lancé via le YAML seul ou via les surcharges `--model-name` /
+    `--model-stage2-name` : deux modèles n'écrasent donc jamais le même fichier.
+
+    Idempotent : si `config.name` porte déjà le suffixe de modèle (cas d'un
+    lancement CLI, où `override_model_names` a déjà renommé le run), il n'est pas
+    ajouté une seconde fois. C'est ce qui garantit qu'un même run écrit dans le
+    même fichier — et retrouve donc son checkpoint de reprise — quel que soit son
+    mode de lancement.
+
+    Args:
+        config: Configuration de l'expérience.
+
+    Returns:
+        Le préfixe des fichiers de sortie du run.
+    """
+    parts = [_slugify_model_name(config.model.name)]
+    if config.model_stage2 is not None:
+        slug_stage2 = _slugify_model_name(config.model_stage2.name)
+        if slug_stage2 not in parts:
+            parts.append(slug_stage2)
+    suffix = "_".join(parts)
+
+    if config.name == suffix or config.name.endswith(f"_{suffix}"):
+        return config.name
+    return f"{config.name}_{suffix}"
+
+
 def override_model_names(
     config: ExperimentConfig,
     model_name: str | None = None,

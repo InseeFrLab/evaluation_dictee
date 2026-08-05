@@ -19,7 +19,9 @@ import shutil
 from pathlib import Path
 
 import fsspec
+import yaml
 
+from evaluation_dictee.config import load_config, run_output_name
 from evaluation_dictee.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -28,6 +30,27 @@ logger = get_logger(__name__)
 # two_stage) partage un seul format : c'est le `name` du run qui distingue les runs.
 SCORING_SUFFIX = "_predictions.jsonl"
 HTR_SUFFIX = "_htr_predictions.jsonl"
+
+
+def resolve_run_name(config_path: str | Path, htr: bool = False) -> str:
+    """Résout le préfixe des fichiers de sortie d'un run à partir de son YAML.
+
+    Pour le scoring, ce préfixe inclut le(s) nom(s) de modèle (`run_output_name`) :
+    se contenter du champ `name` désignerait un fichier inexistant, puisque le
+    benchmark suffixe ses sorties par le modèle. Le pipeline HTR, lui, nomme
+    encore ses sorties d'après le seul champ `name`.
+
+    Args:
+        config_path: Chemin du YAML du run.
+        htr: True pour un run HTR (nommage par `name` seul).
+
+    Returns:
+        Le préfixe des fichiers de sortie du run.
+    """
+    if htr:
+        with open(config_path, encoding="utf-8") as f:
+            return str(yaml.safe_load(f)["name"])
+    return run_output_name(load_config(config_path))
 
 
 def _join_s3(prefix: str, name: str) -> str:

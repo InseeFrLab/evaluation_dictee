@@ -15,8 +15,9 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Nom UNIQUE du run. Sert à la fois de nom de session Langfuse et de préfixe des
-# fichiers de sortie (data/processed/<name>_predictions.jsonl). Deux runs de même
-# nom partagent le checkpoint : changer le nom pour repartir de zéro.
+# fichiers de sortie, qui sont TOUJOURS suffixés par le(s) modèle(s) utilisé(s) :
+# data/processed/<name>_<modele>_predictions.jsonl. Deux runs de même nom ET même
+# modèle partagent le checkpoint ; changer le nom (ou le modèle) repart de zéro.
 # Convention : dictee_<modele>_<variante>  (ex. dictee_gemma4_zeroshot).
 name: dictee_REFERENCE
 

@@ -6,7 +6,6 @@ Exemple : `eval-ecrit benchmark configs/scoring/dictee_REFERENCE.yaml`
 from __future__ import annotations
 
 import typer
-import yaml
 from langfuse import get_client
 from rich.console import Console
 from rich.table import Table
@@ -16,7 +15,7 @@ from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.evaluation.metrics import ScoringMetrics
 from evaluation_dictee.models.factory import build_scorer
 from evaluation_dictee.pipeline.benchmark import run_benchmark
-from evaluation_dictee.utils.s3_export import export_run
+from evaluation_dictee.utils.s3_export import export_run, resolve_run_name
 from evaluation_dictee.utils.tracking import experiment_run, log_metrics
 
 app = typer.Typer(help="Évaluation automatique de la production d'écrit (DEPP × SSP Lab).")
@@ -95,7 +94,7 @@ def benchmark(
 @app.command()
 def export(
     config_path: str | None = typer.Argument(
-        None, help="YAML du run (le nom est lu dans le champ `name`)."
+        None, help="YAML du run (le nom de fichier inclut le modèle)."
     ),
     run_name: str | None = typer.Option(
         None, "--run-name", help="Nom du run (alternative à config_path)."
@@ -115,7 +114,8 @@ def export(
     Fournir SOIT un YAML de run, SOIT `--run-name`.
 
     Args:
-        config_path: Chemin du YAML du run (le nom est lu dans `name`).
+        config_path: Chemin du YAML du run (le préfixe des fichiers est résolu
+            par `resolve_run_name`, modèle inclus).
         run_name: Nom du run, alternative au YAML.
         htr: Exporte `<name>_htr_predictions.jsonl` (transcription seule).
         source_dir: Dossier local des prédictions.
@@ -125,8 +125,9 @@ def export(
         raise typer.BadParameter("Fournir un YAML de run ou --run-name.")
 
     if run_name is None:
-        with open(config_path, encoding="utf-8") as f:
-            run_name = str(yaml.safe_load(f)["name"])
+        # Le fichier de scoring est suffixé par le modèle : lire le seul champ `name`
+        # du YAML viserait un fichier inexistant (cf. `resolve_run_name`).
+        run_name = resolve_run_name(str(config_path), htr=htr)
 
     prefix = dest_prefix or Secrets().s3_predictions_prefix
     dest = export_run(run_name, prefix, source_dir=source_dir, htr=htr)
