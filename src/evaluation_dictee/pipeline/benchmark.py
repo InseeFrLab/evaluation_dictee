@@ -134,8 +134,8 @@ def run_benchmark(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{config.name}_predictions.jsonl"
-    failed_path = output_dir / f"{config.name}_failed_copies.txt"
+    out_path = output_dir / f"{config.name}_{config.model}_predictions.jsonl"
+    failed_path = output_dir / f"{config.name}_{config.model}_failed_copies.txt"
 
     processed = _load_processed_copy_ids(out_path)
     if processed:
