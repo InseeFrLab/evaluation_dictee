@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -114,6 +115,71 @@ def load_config(path: str | Path) -> ExperimentConfig:
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     return ExperimentConfig.model_validate(raw)
+
+
+def _slugify_model_name(name: str) -> str:
+    """Convertit un nom de modèle en fragment de nom de fichier sûr, sans perte.
+
+    Ne remplace QUE les caractères réellement invalides dans un nom de fichier
+    (`/`, espaces, `:`…) : `.` et `-` sont conservés tels quels et NE SONT PAS
+    interchangés, pour que deux noms de modèle différents (ex. un nom fautif
+    avec un point vs. le nom réel avec un tiret) ne produisent jamais le même
+    suffixe — et donc n'écrasent jamais le même fichier de sortie.
+    """
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "-", name).strip("-.")
+
+
+def override_model_names(
+    config: ExperimentConfig,
+    model_name: str | None = None,
+    model_stage2_name: str | None = None,
+) -> ExperimentConfig:
+    """Surcharge le(s) nom(s) de modèle d'une config, sans dupliquer le YAML.
+
+    Les noms doivent correspondre EXACTEMENT à ceux servis sur llm.lab. Dès qu'un
+    nom est surchargé, le `name` du run (donc le fichier de sortie
+    `data/processed/<name>_predictions.jsonl`) est suffixé par le(s) modèle(s)
+    utilisé(s), pour ne jamais écraser le checkpoint d'un autre modèle.
+
+    Args:
+        config: Configuration chargée depuis le YAML.
+        model_name: Nom de modèle pour l'étape 1 (unique étape en end_to_end,
+            transcription en two_stage). None = ne pas surcharger.
+        model_stage2_name: Nom de modèle pour l'étape 2 (codage textuel,
+            two_stage uniquement). None = ne pas surcharger.
+
+    Returns:
+        Une nouvelle config avec les noms de modèle et le `name` mis à jour.
+
+    Raises:
+        ValueError: Si `model_stage2_name` est fourni alors que la config n'a
+            pas de bloc `model_stage2` (approche `end_to_end`).
+    """
+    if model_name is None and model_stage2_name is None:
+        return config
+
+    current_stage2 = config.model_stage2
+    if model_stage2_name is not None and current_stage2 is None:
+        raise ValueError(
+            "--model-stage2-name n'a de sens qu'en approche two_stage "
+            "(la config chargée n'a pas de bloc `model_stage2`)."
+        )
+
+    updates: dict[str, object] = {}
+    suffix_parts = []
+
+    if model_name is not None:
+        updates["model"] = config.model.model_copy(update={"name": model_name})
+        suffix_parts.append(_slugify_model_name(model_name))
+
+    if model_stage2_name is not None and current_stage2 is not None:
+        updates["model_stage2"] = current_stage2.model_copy(update={"name": model_stage2_name})
+        stage2_slug = _slugify_model_name(model_stage2_name)
+        if stage2_slug not in suffix_parts:
+            suffix_parts.append(stage2_slug)
+
+    updates["name"] = f"{config.name}_{'_'.join(suffix_parts)}"
+    return config.model_copy(update=updates)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

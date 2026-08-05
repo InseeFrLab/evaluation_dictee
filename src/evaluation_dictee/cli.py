@@ -11,7 +11,7 @@ from langfuse import get_client
 from rich.console import Console
 from rich.table import Table
 
-from evaluation_dictee.config import Secrets, load_config
+from evaluation_dictee.config import Secrets, load_config, override_model_names
 from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.evaluation.metrics import ScoringMetrics
 from evaluation_dictee.models.factory import build_scorer
@@ -24,7 +24,26 @@ console = Console()
 
 
 @app.command()
-def benchmark(config_path: str) -> None:
+def benchmark(
+    config_path: str,
+    model_name: str | None = typer.Option(
+        None,
+        "--model-name",
+        "-m",
+        help=(
+            "Surcharge model.name (étape 1 / unique étape en end_to_end). "
+            "Doit correspondre exactement au nom servi sur llm.lab."
+        ),
+    ),
+    model_stage2_name: str | None = typer.Option(
+        None,
+        "--model-stage2-name",
+        help=(
+            "Surcharge model_stage2.name (étape 2, codage textuel). "
+            "Uniquement valide en approche two_stage."
+        ),
+    ),
+) -> None:
     """Lance un benchmark à partir d'un fichier de configuration YAML.
 
     Charge la config et les secrets, construit le scorer, exécute le run (tracé
@@ -32,12 +51,21 @@ def benchmark(config_path: str) -> None:
 
     Args:
         config_path: Chemin du fichier YAML de configuration du run.
+        model_name: Surcharge du modèle d'étape 1 (voir `override_model_names`).
+        model_stage2_name: Surcharge du modèle d'étape 2 (two_stage uniquement).
     """
     config = load_config(config_path)
+    config = override_model_names(config, model_name, model_stage2_name)
     secrets = Secrets()
 
     console.print(f"[bold]Run :[/bold] {config.name}")
-    console.print(f"Modèle : {config.model.name} | Méthode : {config.prompt.method}")
+    if config.model_stage2 is not None:
+        console.print(
+            f"Modèle étape 1 : {config.model.name} | étape 2 : {config.model_stage2.name} | "
+            f"Méthode : {config.prompt.method}"
+        )
+    else:
+        console.print(f"Modèle : {config.model.name} | Méthode : {config.prompt.method}")
 
     scorer = build_scorer(
         config=config,
