@@ -17,7 +17,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from evaluation_dictee.config import ModelConfig, PromptConfig
 from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy, load_image
-from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
+from evaluation_dictee.models.base import CODE_NON_PARSE, CopyPrediction, ItemPrediction, Scorer
 from evaluation_dictee.models.vlm import _image_to_data_url, _items_json_schema
 from evaluation_dictee.pipeline.alignment import best_realignment, needs_realignment
 from evaluation_dictee.pipeline.prompts import (
@@ -286,7 +286,7 @@ class TwoStageScorer(Scorer):
                 content[:200],
             )
 
-        codes_seq = [str(it.get("code", "?")).strip() for it in raw_items]
+        codes_seq = [str(it.get("code", CODE_NON_PARSE)).strip() for it in raw_items]
         trans_seq = [it.get("transcription") for it in raw_items]
         conf_seq = [it.get("confidence") for it in raw_items]
 
@@ -312,12 +312,12 @@ class TwoStageScorer(Scorer):
         for item_id in copy.item_ids:
             entry = by_id.get(item_id)
             if entry is None:
-                items.append(ItemPrediction(item_id=item_id, code="?", confidence=0.0))
+                items.append(ItemPrediction(item_id=item_id, code=CODE_NON_PARSE, confidence=0.0))
             else:
                 items.append(
                     ItemPrediction(
                         item_id=item_id,
-                        code=str(entry.get("code", "?")).strip(),
+                        code=str(entry.get("code", CODE_NON_PARSE)).strip(),
                         confidence=entry.get("confidence"),
                         transcription=entry.get("transcription"),
                         comparaison=entry.get("comparaison"),
@@ -342,7 +342,8 @@ class TwoStageScorer(Scorer):
 
         if not transcription.strip():
             items_vides = [
-                ItemPrediction(item_id=i, code="?", confidence=0.0) for i in copy.item_ids
+                ItemPrediction(item_id=i, code=CODE_NON_PARSE, confidence=0.0)
+                for i in copy.item_ids
             ]
             return CopyPrediction(
                 copy_id=copy.copy_id,

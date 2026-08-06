@@ -34,8 +34,6 @@ model_stage2:
   kind: llm
   temperature: 0.0
   max_tokens: 8192
-  # Ces deux options manquaient : l'étape 2 générait du JSON libre, d'où les
-  # ~450 avertissements « JSON non extractible » du run du 5 août.
   structured_output: true
   disable_thinking: true
   max_retries: 2

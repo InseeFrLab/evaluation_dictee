@@ -7,6 +7,13 @@ from dataclasses import dataclass
 
 from evaluation_dictee.data.loaders import Copy
 
+#: Code posé quand la réponse du modèle n'a pu être ni parsée ni alignée sur l'item
+#: (réponse vide, JSON cassé, item absent de la réponse). Ce n'est PAS un code de la
+#: grille : il marque un échec technique, à distinguer d'un désaccord de jugement.
+#: Défini ici parce que c'est l'interface `Scorer` qui l'émet — les deux scorers, le
+#: ré-alignement et le pipeline s'y réfèrent.
+CODE_NON_PARSE = "?"
+
 
 @dataclass
 class ItemPrediction:

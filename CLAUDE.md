@@ -161,10 +161,6 @@ uv run mypy src                 # typage
 # Lancer un benchmark à partir d'une config
 uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
 
-# Densité d'encre de chaque copie (détection des copies vierges, sans appel modèle).
-# Documente `data.blank_ink_threshold` et alimente la page « Écarts » du site.
-uv run scripts/compute_ink_ratios.py --config configs/scoring/dictee_end2end.yaml --export
-
 # Rendre le site Quarto (les pages recalculent leurs figures au rendu)
 uv sync --extra website
 uv run quarto render website
@@ -231,6 +227,12 @@ immédiatement** (`flush + fsync`). Effets :
 - Les copies qui lèvent une exception API sont loggées dans
   `<run>_<modele>_failed_copies.txt` et le run continue sur les suivantes. Elles seront
   retentées au prochain lancement.
+- Une copie dont **aucun** item n'a pu être parsé (code `?` partout : réponse vide,
+  JSON cassé) n'est PAS considérée comme faite. `pipeline/purge.preparer_reprise`
+  la retire du JSONL au démarrage du run — sauvegarde en `<fichier>.bak` — et le run
+  la refait. Sans ce garde-fou, la reprise fige les échecs : c'est ce qui a laissé
+  84 copies entièrement `?` dans le run two_stage du 5 août 2026, alors que leur
+  cause avait été corrigée entre les deux lancements.
 - Pour repartir de zéro, supprimer `<run>_<modele>_predictions.jsonl` (ou changer
   `config.name`).
 

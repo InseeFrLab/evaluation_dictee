@@ -22,7 +22,13 @@ from evaluation_dictee.data import reference
 from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.data.loaders import Copy, ink_ratio, load_dataset, load_image
 from evaluation_dictee.evaluation.metrics import ScoringMetrics, compute_scoring_metrics
-from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
+from evaluation_dictee.models.base import (
+    CODE_NON_PARSE,
+    CopyPrediction,
+    ItemPrediction,
+    Scorer,
+)
+from evaluation_dictee.pipeline.purge import preparer_reprise
 from evaluation_dictee.utils.logging import get_logger
 from evaluation_dictee.utils.tracking import copy_trace
 
@@ -96,32 +102,6 @@ def _single_writer(out_path: Path) -> Iterator[None]:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
-def _load_processed_copy_ids(predictions_path: Path) -> set[str]:
-    """Renvoie les copy_id déjà présents dans un fichier de prédictions (pour reprendre un run).
-
-    Args:
-        predictions_path: chemin du fichier JSONL de prédictions.
-
-    Returns:
-        L'ensemble des copy_id déjà traités (vide si le fichier n'existe pas).
-    """
-    if not predictions_path.exists():
-        return set()
-    processed: set[str] = set()
-    with open(predictions_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-                processed.add(rec["copy_id"])
-            except (json.JSONDecodeError, KeyError):
-                # Ligne tronquée par un crash : ignorée.
-                continue
-    return processed
-
-
 def run_benchmark(
     config: ExperimentConfig,
     scorer: Scorer,
@@ -184,7 +164,9 @@ def run_benchmark(
     out_path = output_dir / f"{run_name}_predictions.jsonl"
     failed_path = output_dir / f"{run_name}_failed_copies.txt"
 
-    processed = _load_processed_copy_ids(out_path)
+    # Retire du fichier les copies dont aucun item n'est exploitable avant de
+    # décider quoi sauter : sinon la reprise fige les échecs (cf. pipeline/purge).
+    processed = preparer_reprise(out_path)
     if processed:
         logger.info(
             "Reprise détectée : %d copies déjà traitées dans %s. On saute ces copies.",
@@ -271,7 +253,7 @@ def run_benchmark(
             for item_id, expert_code in zip(copy.item_ids, copy.expert_codes, strict=True):
                 pred = pred_by_id.get(item_id)
                 true_code = reference.normalize(expert_code, scheme)
-                pred_code = reference.normalize(pred.code, scheme) if pred else "?"
+                pred_code = reference.normalize(pred.code, scheme) if pred else CODE_NON_PARSE
                 records.append(
                     {
                         "copy_id": copy.copy_id,
@@ -408,7 +390,7 @@ def run_benchmark(
     # incohérence (prétraitement expert oublié, prompt non aligné sur le schéma).
     attendus = reference.allowed_codes(scheme)
     codes_vus = set(y_true) | set(y_pred)
-    intrus = codes_vus - attendus - {"?"}  # "?" = réponse modèle non parsée, traité à part
+    intrus = codes_vus - attendus - {CODE_NON_PARSE}  # échec de parsing, traité à part
     if intrus:
         logger.warning(
             "Codes hors du schéma '%s' (attendu %s) détectés : %s. "

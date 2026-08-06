@@ -15,7 +15,12 @@ import pytest
 
 from evaluation_dictee.config import ExperimentConfig
 from evaluation_dictee.data.loaders import Copy
-from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
+from evaluation_dictee.models.base import (
+    CODE_NON_PARSE,
+    CopyPrediction,
+    ItemPrediction,
+    Scorer,
+)
 from evaluation_dictee.pipeline import benchmark as bench
 
 
@@ -291,3 +296,38 @@ def test_resume_skips_processed(patched, monkeypatch, tmp_path: Path) -> None:
 
     assert "c000.png" not in scorer.scored  # sautée à la reprise
     assert len(scorer.scored) == 4
+
+
+def test_reprise_refait_les_copies_non_exploitables(patched, monkeypatch, tmp_path: Path) -> None:
+    """Bout en bout : un run relancé recode les copies dont aucun item n'était parsé.
+
+    Le premier run écrit tout ; on abîme ensuite une copie comme l'aurait fait un
+    échec d'appel (tous les items non parsés). Le second run doit la refaire — et
+    elle seule.
+    """
+    copies = _copies(4)
+    monkeypatch.setattr(bench, "load_dataset", lambda **_k: copies)
+    out = tmp_path / "test_run_fake_predictions.jsonl"
+
+    bench.run_benchmark(_config(4), FakeScorer(), output_dir=tmp_path, concurrency=2)
+
+    abimee = "c002.png"
+    lignes = []
+    for ligne in out.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(ligne)
+        if rec["copy_id"] == abimee:
+            rec["y_pred"] = CODE_NON_PARSE
+        lignes.append(json.dumps(rec))
+    out.write_text("\n".join(lignes) + "\n", encoding="utf-8")
+
+    scorer = FakeScorer()
+    bench.run_benchmark(_config(4), scorer, output_dir=tmp_path, concurrency=2)
+
+    assert scorer.scored == [abimee]  # seule la copie abîmée est recodée
+    recodee = [
+        json.loads(li)
+        for li in out.read_text(encoding="utf-8").splitlines()
+        if json.loads(li)["copy_id"] == abimee
+    ]
+    assert len(recodee) == 3  # les anciennes lignes ont été retirées, pas dupliquées
+    assert all(r["y_pred"] != CODE_NON_PARSE for r in recodee)
