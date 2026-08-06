@@ -1,6 +1,6 @@
 ---
-title: "Résultats des deux approches"
-subtitle: "Deux méthodes d'évaluation de copies, une seule grille de métriques"
+title: "Résultats"
+subtitle: "Deux approches, plusieurs modèles, une seule grille de métriques"
 ---
 
 ```{python}
@@ -33,16 +33,17 @@ REF = A.RUN_REFERENCE if A.RUN_REFERENCE in RUNS else (next(iter(RUNS)) if RUNS 
 #| echo: false
 #| output: asis
 if RUNS:
-    effectifs = " ; ".join(
-        f"**{label}** — modèle `{r.modele}` — {A.milliers(r.n_copies)} copies × "
+    effectifs = "\n".join(
+        f"- **{label}** — modèle `{r.modele}` — {A.milliers(r.n_copies)} copies × "
         f"{r.df['item_id'].nunique()} items (`{r.nom}`)"
         for label, r in RUNS.items()
     )
     print('::: {.callout-note appearance="simple"}')
     print("**Tous les chiffres et figures de cette page sont recalculés au rendu**")
     print("à partir des prédictions exportées (voir la commande d'export en bas de")
-    print("page). Les deux approches sont affichées côte à côte partout où c'est")
-    print(f"possible.\n\nRuns comparés — {effectifs}.")
+    print("page). Chaque **approche** est croisée avec chaque **modèle** : les")
+    print("colonnes et les courbes se lisent donc `approche · modèle`.")
+    print(f"\nRuns comparés :\n\n{effectifs}")
     note = A.note_codes_non_standard(RUNS)
     if note:
         print(f"\n{note}")
@@ -96,10 +97,15 @@ grille → codes).
 
 ## Synthèse — codage de la dictée {#synthese-codage-de-la-dictee}
 
-Comparaison des deux approches sur les mêmes copies, avec **intervalles de
-confiance à 95 %** corrigés de la structure en grappes des données. Le paragraphe
-suivant explique pourquoi cette correction est indispensable ici, et ce qu'elle
-change.
+Une colonne par couple **approche × modèle**, avec **intervalles de confiance à
+95 %** corrigés de la structure en grappes des données. Le paragraphe suivant
+explique pourquoi cette correction est indispensable ici, et ce qu'elle change.
+
+Chaque colonne porte sur les copies que **son** run a traitées ; la dernière
+ligne du tableau donne les copies manquantes. Pour comparer les modèles entre eux
+à composition d'échantillon identique, voir
+[la comparaison à corpus commun](#comparaison-des-modeles-a-corpus-commun) juste
+après.
 
 ::: {.callout-note collapse="true" title="Pourquoi corriger les intervalles du « design effect de Kish » ?"}
 ### Le problème
@@ -174,7 +180,7 @@ if RUNS:
             )
             for label in RUNS
         ]
-        # Design effect appliqué : identique aux deux approches à un cheveu près,
+        # Design effect appliqué : identique d'un run à l'autre à un cheveu près,
         # on affiche celui du run de référence (« bootstrap » pour le kappa).
         deff = syntheses[REF].loc[metrique, "deff"] if REF else float("nan")
         correction = "bootstrap" if pd.isna(deff) else f"÷ {deff:.1f}"
@@ -207,12 +213,12 @@ if RUNS:
         A.table_markdown(
             [
                 "Métrique",
-                *(f"Approche {label}" for label in RUNS),
+                *(label for label in RUNS),
                 "Effectif divisé par",
                 "Lecture",
             ],
             lignes,
-            "Codage de la dictée : comparaison des deux approches, IC 95 % entre crochets",
+            "Codage de la dictée : une colonne par approche × modèle, IC 95 % entre crochets",
         )
     )
     print(
@@ -235,25 +241,39 @@ if RUNS and (COUVERTURE["n_ecartees"] > 0).any():
     )
     print('::: {.callout-warning appearance="simple"}')
     print(
-        f"**Les deux approches ne couvrent pas le même corpus** : {detail}. "
-        "L'approche two-stage abandonne les copies dont l'étape 1 ne produit "
-        "aucune transcription ; l'end-to-end code toujours quelque chose, y "
-        "compris sur des copies blanches (voir la page "
-        "[Écarts IA – humain](ecarts.qmd)). Les métriques ci-dessus sont donc "
-        "calculées sur des ensembles légèrement différents — l'écart est faible "
-        "en volume, mais il porte précisément sur les copies les plus difficiles."
+        f"**Les runs ne couvrent pas le même corpus** : {detail}. Trois causes "
+        "possibles : un run **encore en cours** (les copies restantes ne sont pas "
+        "encore codées), l'approche **two-stage** qui abandonne les copies dont "
+        "l'étape 1 ne produit aucune transcription, ou une copie en échec d'appel "
+        "API. Les colonnes ci-dessus portent donc sur des ensembles de copies "
+        "différents : elles ne sont **pas directement comparables entre elles**, "
+        "car les copies manquantes ne sont pas un sous-échantillon au hasard. "
+        "La [comparaison à corpus commun](#comparaison-des-modeles-a-corpus-commun) "
+        "ci-dessous est la lecture à privilégier tant que cet écart subsiste."
     )
     print(":::")
 ```
 
 ::: {.callout-important appearance="simple"}
-**Ce que dit ce tableau.** Les deux approches se trompent différemment.
-L'**end-to-end** est plus prudent : il valide beaucoup d'items et rate donc une
-grande part des erreurs de l'élève (sur-correction élevée). Le **two-stage**
-détecte davantage d'erreurs mais en invente aussi beaucoup (précision plus
-faible, sur-détection élevée). Le kappa, qui corrige l'accord du hasard, reste
-loin de la variabilité inter-codeurs humains : à ce
-stade, **aucune des deux approches n'est utilisable sans relecture humaine**.
+**Ce que dit ce tableau.**
+
+*Sur l'architecture*, les deux approches se trompent différemment. L'**end-to-end**
+est plus prudent : il valide beaucoup d'items et rate donc une grande part des
+erreurs de l'élève (sur-correction élevée). Le **two-stage** détecte davantage
+d'erreurs mais en invente aussi beaucoup (précision plus faible, sur-détection
+élevée). À modèle égal, l'end-to-end garde le meilleur kappa.
+
+*Sur le modèle*, `qwen3-6-35b-moe` devance `gemma4-26b-moe` sur les **deux**
+architectures. Mais le kappa cache deux profils d'erreur opposés, et c'est ce qui
+doit guider le choix : qwen déclenche très peu de fausses alertes (précision 85,9 %,
+sur-détection 2,6 % en end-to-end) au prix d'un rappel plus faible — il laisse
+passer plus de fautes ; gemma détecte davantage de fautes mais en signale plus à
+tort. Sanctionner un élève à tort et laisser passer une faute n'ont pas le même
+coût pour la DEPP : c'est cet arbitrage, et non le kappa seul, qui tranche.
+
+Dans tous les cas, le kappa reste loin de la variabilité inter-codeurs humains
+(0,879 sur le test pilote) : à ce stade, **aucune configuration n'est utilisable
+sans relecture humaine**.
 :::
 
 ::: {.callout-note appearance="simple" collapse="true" title="Pourquoi l'ECE est peu informatif ici"}
@@ -262,6 +282,124 @@ réduit alors au taux d'erreur et ne mesure plus rien d'utile. C'est préciséme
 pourquoi le projet construit un score de confiance **par désaccord
 inter-modèles** (voir plus bas), bien plus prédictif.
 :::
+
+## Comparaison des modèles à corpus commun {#comparaison-des-modeles-a-corpus-commun}
+
+**Question** : à approche fixée, quel modèle code le mieux ? Y répondre exige de
+comparer les modèles sur **les mêmes copies**. Sinon l'écart mesuré mélange deux
+choses : la qualité du modèle, et la composition de l'échantillon que chaque run a
+traité — et cette composition n'est pas neutre, puisque les copies manquantes sont
+en général les plus difficiles (échec de transcription) ou simplement les
+dernières de la file (run inachevé).
+
+Quand les runs ne couvrent pas le même corpus, les métriques sont donc recalculées
+sur l'**intersection** des copies traitées ; quand ils le couvrent — le cas dès que
+tous les runs sont allés au bout —, la synthèse ci-dessus est déjà comparable telle
+quelle et n'est pas répétée ici.
+
+```{python}
+#| echo: false
+#| output: asis
+# `restreindre_corpus_commun` renvoie les runs tels quels si le corpus est déjà
+# commun : on ne réaffiche alors pas un tableau identique à celui du dessus, on se
+# contente de le dire et on passe au classement.
+if len(RUNS) >= 2:
+    COMMUNS, N_COMMUN = A.restreindre_corpus_commun(RUNS)
+else:
+    COMMUNS, N_COMMUN = {}, 0
+CORPUS_DEJA_COMMUN = bool(COMMUNS) and all(r.n_copies == N_COMMUN for r in RUNS.values())
+
+if not COMMUNS:
+    print('::: {.callout-note appearance="simple"}')
+    print("Cette comparaison demande **au moins deux runs** portant sur des copies")
+    print("communes. Exporter un second run (autre modèle, autre approche) pour")
+    print("l'activer.")
+    print(":::")
+else:
+    syntheses_c = {label: A.synthese_globale(r.df) for label, r in COMMUNS.items()}
+
+if COMMUNS and CORPUS_DEJA_COMMUN:
+    print('::: {.callout-note appearance="simple"}')
+    print(
+        f"Les {len(RUNS)} runs portent tous sur les **mêmes "
+        f"{A.milliers(N_COMMUN)} copies** : aucune restriction n'est nécessaire, et "
+        "les colonnes de [la synthèse](#synthese-codage-de-la-dictee) sont "
+        "directement comparables entre elles. Le classement ci-dessous en découle."
+    )
+    print(":::")
+elif COMMUNS:
+    premiere_c = next(iter(syntheses_c.values()))
+    lignes = []
+    for metrique, ligne in premiere_c.iterrows():
+        fmt = A.formateur_unite(ligne["unite"])
+        lignes.append(
+            [
+                metrique,
+                *[
+                    A.ic(
+                        syntheses_c[label].loc[metrique, "valeur"],
+                        syntheses_c[label].loc[metrique, "bas"],
+                        syntheses_c[label].loc[metrique, "haut"],
+                        fmt,
+                    )
+                    for label in COMMUNS
+                ],
+                ligne["lecture"],
+            ]
+        )
+    print(
+        A.table_markdown(
+            ["Métrique", *COMMUNS, "Lecture"],
+            lignes,
+            f"Métriques recalculées sur les {A.milliers(N_COMMUN)} copies communes "
+            "à tous les runs, IC 95 % entre crochets",
+        )
+    )
+    print(
+        f"\n<small>Restriction à **{A.milliers(N_COMMUN)} copies** sur "
+        f"{A.milliers(max(r.n_copies for r in RUNS.values()))} du corpus complet — "
+        "les chiffres diffèrent donc de la synthèse ci-dessus, qui exploite pour "
+        "chaque run toutes les copies dont il dispose.</small>"
+    )
+```
+
+```{python}
+#| echo: false
+#| output: asis
+# Classement explicite : à approche fixée, quel modèle a le meilleur kappa sur le
+# corpus commun ? Le kappa est retenu comme critère parce qu'il corrige l'accord
+# du hasard, contrairement à l'accord brut que la prévalence gonfle.
+if COMMUNS and len(A.MODELES) >= 2:
+    lignes = []
+    for approche in A.APPROCHES:
+        pairs = [(r.modele, syntheses_c[lab]) for lab, r in COMMUNS.items() if r.approche == approche]
+        if len(pairs) < 2:
+            continue
+        kappas = [(mod, float(s.loc["Kappa de Cohen", "valeur"])) for mod, s in pairs]
+        kappas.sort(key=lambda kv: kv[1], reverse=True)
+        (meilleur, k_max), (dernier, k_min) = kappas[0], kappas[-1]
+        lignes.append(
+            [
+                approche,
+                " · ".join(f"`{mod}` {A.num(k)}" for mod, k in kappas),
+                f"**`{meilleur}`**",
+                f"{k_max - k_min:+.3f}",
+            ]
+        )
+    if lignes:
+        print(
+            A.table_markdown(
+                ["Approche", "Kappa par modèle", "Meilleur modèle", "Écart"],
+                lignes,
+                "Classement des modèles par kappa, à approche fixée et corpus commun",
+            )
+        )
+        print(
+            "\n<small>Un écart de kappa n'est concluant que s'il dépasse la largeur "
+            "des intervalles de confiance de la synthèse : les lire avant de "
+            "trancher.</small>"
+        )
+```
 
 ## Zoom sur la transcription (HTR)
 
@@ -363,8 +501,8 @@ métriques agrégées sur les 83 items d'une copie — voir
 #| fig-cap: "Prévalence d'erreur par item — expert (axe horizontal) vs modèle (axe vertical). Les traits fins sont les intervalles de Wilson à 95 %."
 PREVALENCES = {}
 if RUNS:
-    fig, axes = plt.subplots(1, len(RUNS), figsize=(7.5 * len(RUNS), 7), squeeze=False)
-    for ax, (label, r) in zip(axes[0], RUNS.items()):
+    fig, axes = A.grille_axes(len(RUNS), largeur=7.5, hauteur=7.0)
+    for ax, (label, r) in zip(axes, RUNS.items()):
         prev = A.prevalence_par_item(r.df, MOTS, RANGS)
         PREVALENCES[label] = prev
         x, y = prev["pct_expert"].values, prev["pct_modele"].values
@@ -406,7 +544,7 @@ if RUNS:
             )
         ax.set_xlabel("Prévalence d'erreur selon l'expert (%)")
         ax.set_ylabel("Prévalence d'erreur selon le modèle (%)")
-        ax.set_title(f"Approche {label}", fontweight="bold")
+        ax.set_title(label, fontweight="bold")
         ax.legend(loc="lower right", fontsize=8)
     plt.tight_layout()
     plt.show()
@@ -422,7 +560,7 @@ if PREVALENCES:
         pente, _, r_pearson, *_ = scistats.linregress(x, y)
         lignes.append(
             [
-                f"Approche {label}",
+                label,
                 f"{np.corrcoef(x, y)[0, 1]:+.3f}",
                 f"{scistats.spearmanr(x, y).correlation:+.3f}",
                 f"{pente:.3f}",
@@ -452,7 +590,7 @@ Les items sur lesquels le modèle s'écarte le plus de l'expert :
 if PREVALENCES:
     print("::: {.panel-tabset}")
     for label, prev in PREVALENCES.items():
-        print(f"\n## Approche {label}\n")
+        print(f"\n## {label}\n")
         pires = prev.reindex(prev["ecart"].abs().sort_values(ascending=False).index).head(15)
         lignes = [
             [
@@ -468,7 +606,7 @@ if PREVALENCES:
             A.table_markdown(
                 ["Rang", "Mot attendu", "Erreur — expert", "Erreur — modèle", "Écart"],
                 lignes,
-                f"15 items les plus divergents — approche {label}",
+                f"15 items les plus divergents — {label}",
             )
         )
     print("\n:::")
@@ -516,7 +654,7 @@ if RUNS:
             )
             ax.set_xlabel("Nombre par copie")
             ax.set_ylabel("Nombre de copies")
-            ax.set_title(f"{titre}\napproche {label}", fontsize=9, fontweight="bold")
+            ax.set_title(f"{titre}\n{label}", fontsize=9, fontweight="bold")
             ax.legend(fontsize=7.5)
     plt.tight_layout()
     plt.show()
@@ -613,8 +751,8 @@ le niveau absolu est biaisé.
 #| fig-cap: "Nombre d'erreurs par copie : modèle vs expert. Chaque point est une copie."
 CORRELATIONS = {}
 if RUNS:
-    fig, axes = plt.subplots(1, len(RUNS), figsize=(6.8 * len(RUNS), 6.6), squeeze=False)
-    for ax, (label, r) in zip(axes[0], RUNS.items()):
+    fig, axes = A.grille_axes(len(RUNS), largeur=6.8, hauteur=6.6)
+    for ax, (label, r) in zip(axes, RUNS.items()):
         x = r.copies["n_erreurs_expert"].values
         y = r.copies["n_erreurs_modele"].values
         maxv = max(x.max(), y.max()) * 1.05
@@ -635,7 +773,7 @@ if RUNS:
         }
         ax.set_xlabel("Nombre d'erreurs selon l'expert (proxy du niveau de l'élève)")
         ax.set_ylabel("Nombre d'erreurs selon le modèle")
-        ax.set_title(f"Approche {label}", fontweight="bold")
+        ax.set_title(label, fontweight="bold")
         ax.legend(loc="upper left", fontsize=8)
     plt.tight_layout()
     plt.show()
@@ -647,7 +785,7 @@ if RUNS:
 if CORRELATIONS:
     lignes = [
         [
-            f"Approche {label}",
+            label,
             f"{c['pearson']:+.3f}",
             f"{c['spearman']:+.3f}",
             f"{c['kendall']:+.3f}",
@@ -715,10 +853,16 @@ if RUNS:
 
 ## Consensus inter-modèles
 
-**Motivation** : quand deux approches indépendantes convergent, la prédiction est
-fiable ; quand elles divergent, c'est un signal d'incertitude qui appelle un
+**Motivation** : quand plusieurs runs indépendants convergent, la prédiction est
+fiable ; quand ils divergent, c'est un signal d'incertitude qui appelle un
 humain. Le désaccord inter-modèles est un **bien meilleur prédicteur de
 confiance** que le score annoncé par un modèle unique.
+
+Le consensus est calculé sur **tous les runs chargés** — approches et modèles
+confondus, c'est-à-dire sur les items communs à tous. Croiser deux modèles ET
+deux approches donne un signal plus riche qu'un seul de ces axes : deux
+architectures différentes servies par deux modèles différents se trompent moins
+souvent *de la même façon*.
 
 ```{python}
 #| echo: false
@@ -738,14 +882,14 @@ if len(RUNS) >= 2:
 if DF_ACCORD is None:
     print('::: {.callout-note appearance="simple"}')
     print("Cette section demande **au moins deux runs** portant sur les mêmes copies.")
-    print("Lancer un second benchmark (autre approche, autre modèle ou autre prompt)")
+    print("Lancer un second benchmark (autre modèle, autre approche ou autre prompt)")
     print("puis l'exporter pour l'activer.")
     print(":::")
 else:
     print(
-        f"Sur les {A.milliers(len(DF_ACCORD))} items communs aux deux approches, "
+        f"Sur les {A.milliers(len(DF_ACCORD))} items communs aux {len(RUNS)} runs comparés, "
         f"**{A.pct(DF_ACCORD['unanimite'].mean())} font l'objet d'un accord** "
-        "entre les modèles. Le score de confiance moyen par copie (part d'items "
+        "entre les runs. Le score de confiance moyen par copie (part d'items "
         f"sur lesquels les modèles s'accordent) vaut "
         f"{A.pts(CONF_COPIES['score_confiance'].mean())}."
     )
@@ -801,7 +945,7 @@ if DF_ACCORD is not None:
         )
     )
     print(
-        "\n**Lecture** : quand les deux approches s'accordent (dernière ligne), "
+        "\n**Lecture** : quand tous les runs s'accordent (dernière ligne), "
         "l'accord avec l'expert est nettement plus élevé. Le désaccord "
         "inter-modèles est donc un signal exploitable pour orienter la relecture "
         "humaine — c'est ce qu'exploite la section suivante."
@@ -827,7 +971,7 @@ if DF_ACCORD is not None:
         COURBES_RENVOI[label] = courbe
         xs = courbe["pct_copies_renvoyees"].values
         ys = courbe["pct_accord_retenues"].values
-        ax.plot(xs, ys, color=r.couleur, lw=2.5, marker="o", ms=4.5, label=f"Approche {label}")
+        ax.plot(xs, ys, color=r.couleur, lw=2.5, marker="o", ms=4.5, label=label)
         ax.fill_between(xs, courbe["accord_lo"], courbe["accord_hi"], alpha=0.15, color=r.couleur)
         ax.axhline(ys[0], color=r.couleur, ls=":", lw=1, alpha=0.7)
         for seuil in (20, 50):
@@ -856,7 +1000,7 @@ if DF_ACCORD is not None:
 if COURBES_RENVOI:
     print("::: {.panel-tabset}")
     for label, courbe in COURBES_RENVOI.items():
-        print(f"\n## Approche {label}\n")
+        print(f"\n## {label}\n")
         cible = courbe[courbe["seuil_confiance"].isin([50, 60, 70, 80, 90, 95, 100])]
         lignes = [
             [
@@ -876,7 +1020,7 @@ if COURBES_RENVOI:
                 ["Seuil de confiance τ", "Copies renvoyées", "Accord sur les copies conservées",
                  "Copies conservées"],
                 lignes,
-                f"Seuils de renvoi — approche {label}",
+                f"Seuils de renvoi — {label}",
             )
         )
     print("\n:::")
@@ -914,7 +1058,7 @@ if RUNS:
         lignes.append([f"`{transition}`", *cellules])
     print(
         A.table_markdown(
-            ["Transition expert → modèle", *(f"Approche {label}" for label in RUNS)],
+            ["Transition expert → modèle", *(label for label in RUNS)],
             lignes,
             "Décomposition des désaccords : effectif et part parmi les désaccords",
         )
@@ -946,7 +1090,7 @@ if RUNS:
         ]
         ax.errorbar(
             valeurs, y + decalage, xerr=err, fmt="o", ms=4, lw=0,
-            elinewidth=0.9, capsize=1.8, color=r.couleur, alpha=0.9, label=f"Approche {label}",
+            elinewidth=0.9, capsize=1.8, color=r.couleur, alpha=0.9, label=label,
         )
     ax.set_yticks(y)
     ax.set_yticklabels([A.libelle_item(i, MOTS, RANGS) for i in ordre], fontsize=7)
@@ -954,7 +1098,7 @@ if RUNS:
     ax.axvline(85, color=A.C_PB, ls=":", lw=1)
     ax.axvline(95, color=A.C_MOYEN, ls=":", lw=1)
     ax.set_xlabel("Accord avec l'expert (%)")
-    ax.set_title(f"Accord par item — items triés selon l'approche {REF}", fontweight="bold")
+    ax.set_title(f"Accord par item — items triés selon {REF}", fontweight="bold")
     ax.legend(loc="lower right", fontsize=8.5)
     plt.show()
 ```
@@ -990,7 +1134,7 @@ if RUNS:
         )
         ax2.plot(
             tendance["x"], tendance["y"] * 100, color=r.couleur, lw=2.2,
-            marker="o", ms=5, label=f"Approche {label}",
+            marker="o", ms=5, label=label,
         )
     ax2.set_xlabel("% d'items en erreur sur la copie, selon l'expert")
     ax2.set_ylabel("Accord modèle-expert (%)")
@@ -1028,9 +1172,6 @@ uv run scripts/export_predictions.py --config configs/scoring/dictee_two_stage.y
 uv run scripts/run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml
 uv run scripts/export_predictions.py --config configs/htr/htr_REFERENCE.yaml --htr
 
-# Densité d'encre du corpus : documente le seuil de détection des copies vierges
-# (quelques minutes, aucun appel modèle). Alimente la page « Écarts IA – humain ».
-uv run scripts/compute_ink_ratios.py --config configs/scoring/dictee_end2end.yaml --export
 ```
 
 **3. Rendre le site.** Le rendu exige `matplotlib` et le noyau Jupyter, réunis
@@ -1041,27 +1182,34 @@ uv sync --extra website
 uv run quarto render website        # ou : uv run quarto preview website
 ```
 
-**4. Choisir les runs affichés** via des variables d'environnement. Le nom du
+**4. Choisir les modèles comparés** via des variables d'environnement. Le nom du
 modèle fait partie du nom de fichier exporté
-(`<run>_<modèle>_predictions.jsonl`) : changer de modèle se fait donc avec la
-seule variable `RESULTATS_MODELE`.
+(`<run>_<modèle>_predictions.jsonl`) : le site croise donc chaque approche avec
+chaque modèle listé dans `RESULTATS_MODELES`.
 
 ```bash
-export RESULTATS_MODELE=gemma4-26b-moe        # modèle affiché (défaut)
-export RESULTATS_RUN_REFERENCE="end-to-end"   # run de référence des classements
-# Nom de run complet, si le suffixe de modèle ne suffit pas (two_stage à deux
-# modèles distincts, run renommé…) :
-export RESULTATS_RUN_END_TO_END=dictee_end2end_gemma4-26b-moe
-export RESULTATS_RUN_TWO_STAGE=dictee_two_stage_qwen3-6-35b-moe_gemma4-26b-moe
+# Modèles comparés, séparés par des virgules, dans l'ordre d'affichage :
+export RESULTATS_MODELES="gemma4-26b-moe,qwen3-6-35b-moe"
+# Modèle des pages sans axe « modèle » (page Écarts) :
+export RESULTATS_MODELE_REFERENCE=gemma4-26b-moe
+export RESULTATS_APPROCHE_REFERENCE="end-to-end"   # approche de référence
 export RESULTATS_RUN_HTR_BASE=htr_gemma4_base
 export RESULTATS_RUN_HTR_FINETUNE=htr_gemma4_finetune
 # Rendu hors ligne, depuis un dossier local de prédictions :
-export S3_PREDICTIONS_PREFIX=/chemin/vers/predictions
+export S3_PREDICTIONS_PREFIX=data/processed
 ```
 
-Si le run demandé n'est pas exporté, le site retombe sur le run réellement
-présent pour cette approche et le signale dans l'encadré de fin de page, plutôt
-que d'afficher des « — ».
+Un modèle demandé mais non exporté est **omis**, jamais remplacé par un autre :
+substituer un modèle à un autre fausserait précisément la comparaison que cette
+page produit. Les runs manquants sont listés dans l'encadré de fin de page, avec
+l'inventaire de ce qui est réellement exporté.
+
+::: {.callout-tip appearance="simple"}
+Le rendu est mis en cache (`execute: freeze: auto`) : une page n'est réexécutée
+que si son `.qmd` change. Après un **nouvel export** de prédictions, forcer le
+recalcul avec `rm -rf website/_freeze`, sinon le site réaffiche les chiffres du
+rendu précédent.
+:::
 
 L'exploration interactive (au-delà de ce que le site affiche) se fait dans les
 **notebooks** :

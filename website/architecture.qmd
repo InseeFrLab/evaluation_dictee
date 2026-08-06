@@ -53,7 +53,6 @@ scoring, le nom du modèle si l'on veut le surcharger sans éditer le YAML.
 | **Transcription HTR** seule | `run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml` | `data/processed/htr_REFERENCE_htr_predictions.jsonl` |
 | **Export S3** | `export_predictions.py --config <yaml du run>` | `$S3_PREDICTIONS_PREFIX/<run>_<modèle>_predictions.jsonl` |
 | **Fine-tuning** HTR | `finetune_htr_scoledit.py --config configs/finetune/finetune_REFERENCE.yaml` | `checkpoints/<name>/` (adaptateur LoRA) |
-| Densité d'encre (copies vierges) | `compute_ink_ratios.py --config <yaml> --export` | `data/processed/<corpus>_ink_ratios.csv` |
 
 ### 0. Préalable, une fois par service
 
@@ -167,12 +166,12 @@ YAML avant de lancer l'entraînement complet.
 
 ### 6. Annexe — densité d'encre (détection des copies vierges)
 
-Sans aucun appel modèle. Documente le seuil `data.blank_ink_threshold` et alimente
-la page « Écarts » du site.
-
-```bash
-uv run scripts/compute_ink_ratios.py --config configs/scoring/dictee_end2end.yaml --export
-```
+Aucune commande à lancer : le benchmark mesure la densité d'encre de chaque copie
+au moment où il la traite — c'est ainsi qu'il décide si elle est vierge — et écrit
+la valeur dans la colonne `ink_ratio` du JSONL. Le seuil `data.blank_ink_threshold`
+et la distribution qui le justifie (page « Écarts » du site) se lisent donc
+directement dans les prédictions exportées, sans mesure parallèle qui pourrait
+diverger de celle du pipeline.
 
 ### Lancer un run long sans le perdre
 
