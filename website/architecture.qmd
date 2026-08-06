@@ -1,6 +1,6 @@
 ---
 title: "Architecture du projet"
-subtitle: "De l'imagett de la copie à l'évaluation, étape par étape"
+subtitle: "De l'imagette de la copie à l'évaluation, étape par étape"
 ---
 
 ## Vue d'ensemble

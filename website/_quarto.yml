@@ -28,12 +28,12 @@ website:
         file: initialisation.qmd
       - text: "Architecture"
         file: architecture.qmd
+      - text: "Évaluation & métriques"
+        file: evaluation.qmd
       - text: "Résultats"
         file: resultats.qmd
       - text: "Écarts IA – humain"
         file: ecarts.qmd
-      - text: "Évaluation & métriques"
-        file: evaluation.qmd
       - text: "Fine-tuning"
         file: finetuning.qmd
       - text: "Présentations"

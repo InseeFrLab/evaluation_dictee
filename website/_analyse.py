@@ -262,6 +262,26 @@ def table_markdown(entetes: list[str], lignes: list[list[str]], legende: str = "
     return "\n".join(out)
 
 
+# Ancre de la définition de chaque métrique sur la page « Évaluation & métriques ».
+# Les tableaux de résultats n'affichent donc plus le sens de lecture ni la méthode
+# d'intervalle : ils y renvoient, pour rester lisibles.
+ANCRES_METRIQUES: dict[str, str] = {
+    "Accord brut": "accord-brut",
+    "Kappa de Cohen": "kappa",
+    "Rappel des erreurs (sensibilité)": "rappel",
+    "Précision sur les erreurs": "precision",
+    "Taux de sur-correction": "sur-correction",
+    "Taux de sur-détection": "sur-detection",
+    "ECE (calibration)": "ece",
+}
+
+
+def lien_metrique(metrique: str, page: str = "evaluation.qmd") -> str:
+    """Nom de métrique transformé en lien vers sa définition (inchangé si inconnue)."""
+    ancre = ANCRES_METRIQUES.get(metrique)
+    return f"[{metrique}]({page}#{ancre})" if ancre else metrique
+
+
 def bloc_notes() -> str:
     """Callout replié listant les incidents de chargement (vide si aucun)."""
     if not NOTES:

@@ -55,7 +55,7 @@ else:
     print(":::")
 ```
 
-## Les deux approches en détail
+## From image to text : les deux approches en détail
 
 Le projet compare deux architectures pour passer de l'image au code. Toutes deux
 respectent la même interface et sont donc évaluées par le même code de métriques :
@@ -69,98 +69,55 @@ On sépare explicitement la **lecture** et le **jugement** :
   **exactement tel que l'élève l'a écrit**, fautes comprises. Il ne connaît ni le
   texte de référence ni le découpage en items : on mesure la **lecture pour
   elle-même**.
-- **Étape 2 (codage)** : un modèle reçoit cette transcription **et** le texte de
-  référence, puis code chaque item. Il ne voit pas l'image. Ce peut être un modèle
+- **Étape 2 (codage)** : un modèle reçoit cette transcription, le texte de
+  référence, la grille de notation et la liste des consigne sà appliquer,
+  puis code chaque item. Il ne voit pas l'image. Ce peut être un modèle
   de texte plus léger (champ `model_stage2`).
-
-| Avantages | Limites |
-|-----------|---------|
-| La transcription intermédiaire peut être analysée (on voit ce que le modèle a lu). | Deux étapes = **deux sources d'erreur** qui se cumulent : l'erreur de transcription et d'évaluation |
-| Les erreurs de **lecture** et de **jugement** sont découplées. | Deux appels au modèle = coût et latence plus élevés. |
-| L'étape 2 peut utiliser un modèle texte moins cher au token. | |
 
 ### Approche 2 — End-to-end (une seule passe)
 
-Un unique modèle multimodal (*VLM*) reçoit l'image, le texte de référence et la
-grille, et produit **directement** le code de chaque item.
-
-
-| Avantages | Limites |
-|-----------|---------|
-| **Un seul appel** : plus simple, plus rapide, moins cher. | La lecture est « fondue » dans le codage : moins facile à diagnostiquer. |
-| Le modèle voit l'image **et** la référence en même temps. | Risque de **sur-correction** (le modèle « corrige » silencieusement l'élève). |
+Un unique modèle multimodal (*VLM*) reçoit l'image, le texte de référence, la
+grille de notation de chaque item et la liste des consignes à appliquer, et produit **directement** le code de chaque item.
 
 ::: {.callout-note appearance="simple"}
-C'est l'approche **par défaut** du projet (la méthode « C » : image + référence +
-grille → codes).
+C'est l'approche **par défaut** du projet (image + texte de référence +
+grille + consignes → codes).
 :::
+
+### Ce qui les distingue
+
+Une ligne par critère de décision, à lire horizontalement.
+
+| | Approche *two-stage* | Approche *end-to-end* |
+|---|---|---|
+| **Appels au modèle** par copie | 2 (lire, puis coder) | 1 |
+| **Coût et latence** | Plus élevés, mais l'étape 2 peut tourner sur un modèle texte moins cher au token | Plus faibles |
+| **Ce que voit le modèle qui code** | La transcription et le texte de référence, pas l'image | L'image et le texte de référence |
+| **Sources d'erreur** | Deux, qui se cumulent : une mauvaise lecture se propage au codage sans pouvoir être rattrapée | Une seule, mais indissociable du codage |
+| **Diagnostic d'un désaccord** avec l'expert | Possible : la transcription dit si la faute vient de la lecture ou du jugement | Limité : on n'observe que le code final |
+| **Risque propre** | La transcription perd l'information graphique (ratures, lettres ambiguës, accents douteux) | Sur-correction : le modèle code ce que l'élève *aurait dû* écrire |
+
+Séparer la lecture du jugement produit deux effets opposés, et c'est la même
+décision de conception qui les cause : on gagne la possibilité de diagnostiquer
+(la transcription est lisible), on perd la possibilité de rattraper (l'étape 2 ne
+voit plus l'image, donc elle code une lecture erronée sans le savoir). Ce n'est
+pas une contradiction mais un arbitrage que les chiffres tranchent :
+[la synthèse](#synthese-codage-de-la-dictee) montre l'end-to-end devant sur les
+deux modèles testés.
 
 ## Synthèse — codage de la dictée {#synthese-codage-de-la-dictee}
 
-Une colonne par couple **approche × modèle**, avec **intervalles de confiance à
-95 %** corrigés de la structure en grappes des données. Le paragraphe suivant
-explique pourquoi cette correction est indispensable ici, et ce qu'elle change.
+Une colonne par couple **approche × modèle**. Le nom de chaque métrique renvoie à
+sa définition et à sa formule sur la page
+[Évaluation & métriques](evaluation.qmd), qui donne aussi le **sens de lecture**
+(faut-il viser haut ou bas ?).
 
-Chaque colonne porte sur les copies que **son** run a traitées ; la dernière
-ligne du tableau donne les copies manquantes. Pour comparer les modèles entre eux
-à composition d'échantillon identique, voir
-[la comparaison à corpus commun](#comparaison-des-modeles-a-corpus-commun) juste
-après.
-
-::: {.callout-note collapse="true" title="Pourquoi corriger les intervalles du « design effect de Kish » ?"}
-### Le problème
-
-Un intervalle de confiance se resserre à mesure qu'on accumule des observations
-**indépendantes**. Or les 83 items d'une même copie ne le sont pas : si un élève
-se trompe sur un mot, il a de bonnes chances de se tromper sur le suivant. Son
-niveau est commun à ses 83 items.
-
-Conséquence : les ≈ 290 000 items du corpus ne portent pas l'information de
-290 000 observations indépendantes. Traiter chaque item comme indépendant
-produirait des intervalles trop étroits — on annoncerait une précision qu'on n'a
-pas.
-
-### La correction
-
-Le **design effect de Kish** chiffre cette perte d'information :
-
-$$\text{deff} = 1 + (m - 1)\times \text{ICC}$$
-
-où *m* est le nombre d'items par copie (83) et l'**ICC** (*intra-class
-correlation*) la part de la variance qui vient des différences **entre** copies
-plutôt que de la variabilité **à l'intérieur** d'une copie. Un ICC nul signifie
-qu'une copie n'apprend rien sur elle-même et que les items sont de fait
-indépendants ; un ICC de 1 signifie qu'une copie entière ne vaut qu'une seule
-observation.
-
-On divise alors l'effectif par ce facteur pour obtenir l'**effectif effectif** —
-le nombre d'observations indépendantes qui porterait autant d'information — et
-c'est sur lui qu'on calcule l'intervalle. Celui-ci s'élargit d'un facteur √deff.
-
-### Un design effect par métrique, pas un pour tout le corpus
-
-Point important, et facile à rater : le design effect appartient à une
-**indicatrice** précise, pas à un jeu de données. Sur ce corpus, l'indicatrice
-d'erreur donne ≈ 10, celle d'accord ≈ 7,5, celle du rappel ≈ 4. Chaque ligne du
-tableau ci-dessous est donc corrigée par **son propre** design effect, affiché en
-colonne.
-
-### Le cas du kappa
-
-Le kappa n'est la moyenne d'aucune indicatrice : lui appliquer le design effect
-d'une proportion voisine le sur-corrige d'environ 50 %. Son intervalle vient donc
-d'un **bootstrap par grappes** — on retire au hasard des copies entières, avec
-remise, et on observe la dispersion du kappa. Cette méthode ne suppose rien sur la
-structure de corrélation. Elle est ici exacte et rapide : la matrice de confusion
-de chaque copie est calculée une fois, un tirage se réduisant à sommer celles des
-copies tirées.
-
-### Où la correction ne s'applique pas
-
-À la [prévalence par item](#prevalence-derreur-par-item) : chaque item n'y est
-observé qu'une fois par copie, donc une fois par élève. Ces observations sont
-indépendantes et leur design effect vaut 1.
-:::
+Les **intervalles de confiance à 95 %** entre crochets sont corrigés de la
+**structure en grappes** des données : les observations ne sont pas 290 000 items
+isolés mais 83 items × 3 469 copies, et les items d'une même copie se ressemblent
+puisqu'ils ont été écrits par le même élève. Sans cette correction, ils seraient
+deux à trois fois trop étroits — voir
+[intervalles de confiance et structure en grappes](evaluation.qmd#intervalles).
 
 ```{python}
 #| echo: false
@@ -180,19 +137,13 @@ if RUNS:
             )
             for label in RUNS
         ]
-        # Design effect appliqué : identique d'un run à l'autre à un cheveu près,
-        # on affiche celui du run de référence (« bootstrap » pour le kappa).
-        deff = syntheses[REF].loc[metrique, "deff"] if REF else float("nan")
-        correction = "bootstrap" if pd.isna(deff) else f"÷ {deff:.1f}"
-        lignes.append([metrique, *cellules, correction, ligne["lecture"]])
+        lignes.append([A.lien_metrique(metrique), *cellules])
 
     # ECE : calibration du score de confiance, non dérivable de la synthèse ci-dessus.
     from evaluation_dictee.evaluation.results_summary import scoring_summary
 
     eces = [A.num(scoring_summary(r.df, run=r.nom).ece) for r in RUNS.values()]
-    lignes.append(
-        ["ECE (calibration)", *eces, "—", "écart confiance/justesse : plus **bas** = mieux"]
-    )
+    lignes.append([A.lien_metrique("ECE (calibration)"), *eces])
 
     # Couverture : une approche qui écarte des copies n'est pas comparable à
     # effectif égal. Le two-stage abandonne celles qu'il ne sait pas transcrire.
@@ -205,28 +156,14 @@ if RUNS:
                 f"<small>({A.pts(COUVERTURE.loc[label, 'pct_ecartees'], 2)})</small>"
                 for label in RUNS
             ],
-            "—",
-            "copies sans codage produit : plus **bas** = mieux",
         ]
     )
     print(
         A.table_markdown(
-            [
-                "Métrique",
-                *(label for label in RUNS),
-                "Effectif divisé par",
-                "Lecture",
-            ],
+            ["Métrique", *(label for label in RUNS)],
             lignes,
             "Codage de la dictée : une colonne par approche × modèle, IC 95 % entre crochets",
         )
-    )
-    print(
-        "\n<small>La colonne « effectif divisé par » donne le design effect "
-        "appliqué à chaque métrique : un facteur de 7,5 signifie que les ≈ 290 000 "
-        "items pèsent autant que 39 000 observations indépendantes, et que "
-        "l'intervalle est √7,5 ≈ 2,7 fois plus large qu'un calcul naïf. "
-        "Voir l'encadré ci-dessus.</small>"
     )
 ```
 
@@ -277,10 +214,13 @@ sans relecture humaine**.
 :::
 
 ::: {.callout-note appearance="simple" collapse="true" title="Pourquoi l'ECE est peu informatif ici"}
-Les modèles renvoient un score de confiance quasi constant à 1,0 : l'ECE se
-réduit alors au taux d'erreur et ne mesure plus rien d'utile. C'est précisément
-pourquoi le projet construit un score de confiance **par désaccord
-inter-modèles** (voir plus bas), bien plus prédictif.
+Les modèles renvoient un score de confiance quasi constant à 1,0 : l'[ECE](evaluation.qmd#ece)
+se réduit alors au taux d'erreur et ne mesure plus rien d'utile — un score
+constant ne **discrimine** rien, et aucune
+[recalibration](evaluation.qmd#recalibration) n'y changerait quoi que ce soit.
+C'est précisément pourquoi le projet construit un score de confiance
+[par désaccord inter-modèles](evaluation.qmd#consensus), bien plus prédictif
+(voir plus bas).
 :::
 
 ## Comparaison des modèles à corpus commun {#comparaison-des-modeles-a-corpus-commun}
@@ -334,7 +274,7 @@ elif COMMUNS:
         fmt = A.formateur_unite(ligne["unite"])
         lignes.append(
             [
-                metrique,
+                A.lien_metrique(metrique),
                 *[
                     A.ic(
                         syntheses_c[label].loc[metrique, "valeur"],
@@ -344,12 +284,11 @@ elif COMMUNS:
                     )
                     for label in COMMUNS
                 ],
-                ligne["lecture"],
             ]
         )
     print(
         A.table_markdown(
-            ["Métrique", *COMMUNS, "Lecture"],
+            ["Métrique", *COMMUNS],
             lignes,
             f"Métriques recalculées sur les {A.milliers(N_COMMUN)} copies communes "
             "à tous les runs, IC 95 % entre crochets",
@@ -411,13 +350,14 @@ modèles sur la seule capacité à lire.
 Le point délicat, propre à l'écriture d'enfants : on veut une transcription
 **fidèle**, c'est-à-dire qui **préserve les fautes**. Un modèle qui « corrige »
 spontanément l'orthographe est un mauvais transcripteur ici, même s'il produit un
-français correct — c'est le biais de **sur-correction**, surveillé de près (voir
-la page [Évaluation](evaluation.qmd)).
+français correct — c'est le biais de
+[sur-correction de lecture](evaluation.qmd#sur-correction-lecture), surveillé de
+près.
 
 L'évaluation de la transcription se fait sur le corpus **Scoledit**, qui fournit
 des transcriptions de référence **humaines** (fautes préservées), du CP au CM2.
-On mesure la qualité de lecture par le **CER** et le **WER** (définis dans la page
-[Évaluation](evaluation.qmd)).
+On mesure la qualité de lecture par le [CER](evaluation.qmd#cer) et le
+[WER](evaluation.qmd#wer), agrégés en micro-moyenne sur le corpus.
 
 ```{python}
 #| echo: false
@@ -479,7 +419,7 @@ Les principales questions sur l'évaluation du modèles sont :
 Les sections qui suivent reprennent l'analyse du notebook
 `notebooks/03_analyse_resultats.ipynb`.
 
-## Prévalence d'erreur par item
+## Prévalence d'erreur par item {#prevalence-derreur-par-item}
 
 **Objectif DEPP** : 
     - 1. calculer le nombre d'erreur par copie.
@@ -490,10 +430,8 @@ signifie que le modèle **sous-estime** la difficulté de cet item.
 
 Les intervalles de confiance sont des intervalles de Wilson **sans correction de
 clustering**, et c'est volontaire : pour un item donné, il y a exactement *une*
-observation par copie, chacune venant d'un élève différent. Ces observations sont
-donc indépendantes et il n'y a rien à corriger. La correction s'applique aux
-métriques agrégées sur les 83 items d'une copie — voir
-[la synthèse](#synthese-codage-de-la-dictee) ci-dessus.
+observation par copie, chacune venant d'un élève différent — voir
+[où la correction ne s'applique pas](evaluation.qmd#sans-correction).
 
 ```{python}
 #| echo: false
@@ -856,7 +794,9 @@ if RUNS:
 **Motivation** : quand plusieurs runs indépendants convergent, la prédiction est
 fiable ; quand ils divergent, c'est un signal d'incertitude qui appelle un
 humain. Le désaccord inter-modèles est un **bien meilleur prédicteur de
-confiance** que le score annoncé par un modèle unique.
+confiance** que le score annoncé par un modèle unique, qui ne varie presque pas —
+voir [score de consensus inter-modèles](evaluation.qmd#consensus) pour sa
+définition.
 
 Le consensus est calculé sur **tous les runs chargés** — approches et modèles
 confondus, c'est-à-dire sur les items communs à tous. Croiser deux modèles ET
@@ -956,8 +896,9 @@ if DF_ACCORD is not None:
 
 **Question opérationnelle** : combien de copies faut-il renvoyer en correction
 humaine pour atteindre un accord cible sur les copies conservées ? On trie les
-copies par score de confiance (part d'items où les modèles s'accordent) et on
-renvoie celles sous le seuil.
+copies par score de confiance et on renvoie celles sous le seuil — la
+construction de la courbe est détaillée dans
+[courbe de renvoi humain](evaluation.qmd#courbe-de-renvoi).
 
 ```{python}
 #| echo: false
@@ -1026,12 +967,15 @@ if COURBES_RENVOI:
     print("\n:::")
 ```
 
-## Décomposition des désaccords
+## Décomposition des désaccords {#decomposition-des-desaccords}
 
-Chaque désaccord n'a pas les mêmes conséquences. **Sur-correction**
-(expert : erreur → modèle : correct) veut dire qu'une faute de l'élève est
-passée inaperçue. **Sur-détection** (expert : correct → modèle : erreur) veut
-dire qu'on sanctionne un élève à tort.
+Chaque désaccord n'a pas les mêmes conséquences :
+[sur-correction](evaluation.qmd#sur-correction) (expert : erreur → modèle :
+correct) veut dire qu'une faute de l'élève est passée inaperçue ;
+[sur-détection](evaluation.qmd#sur-detection) (expert : correct → modèle :
+erreur) veut dire qu'on sanctionne un élève à tort. Le tableau détaille chaque
+transition `code expert → code modèle`, soit la
+[matrice de confusion](evaluation.qmd#matrice-de-confusion) mise à plat.
 
 ```{python}
 #| echo: false
@@ -1067,8 +1011,8 @@ if RUNS:
 
 ## Accord par item
 
-Accord entre modèle et expert pour chacun des 83 items, avec intervalle de
-Wilson à 95 %. Les items sont triés par accord croissant selon l'approche de
+Accord entre modèle et expert pour chacun des 83 items, avec
+[intervalle de Wilson](evaluation.qmd#wilson) à 95 %. Les items sont triés par accord croissant selon l'approche de
 référence : ceux du haut du graphique sont les plus problématiques.
 
 ```{python}
@@ -1228,4 +1172,5 @@ Au-delà des chiffres bruts, le projet vise trois décisions :
    améliore-t-il assez la lecture pour justifier son coût) ?
 3. **Où placer le seuil** de renvoi vers un correcteur humain, pour garantir un
    taux d'erreur résiduel acceptable tout en automatisant le maximum de copies
-   (voir la **courbe de renvoi** ci-dessus et la page [Évaluation](evaluation.qmd)).
+   (voir la courbe de renvoi ci-dessus et sa
+   [définition](evaluation.qmd#courbe-de-renvoi)).
