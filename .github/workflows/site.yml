@@ -46,6 +46,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Bascule Pages en mode « GitHub Actions » (déploiement par artefact).
+      # Sans ça, si la source du dépôt est restée sur « Deploy from a branch »,
+      # le job de déploiement boucle sur `deployment_in_progress` puis échoue :
+      # il attend un build de branche qui n'arrive jamais.
+      - name: Configurer Pages
+        uses: actions/configure-pages@v5
+
       - name: Installer Quarto
         uses: quarto-dev/quarto-actions/setup@v2
         with:
@@ -91,6 +98,9 @@ jobs:
   deployer:
     needs: construire
     runs-on: ubuntu-latest
+    # Un déploiement Pages sain prend moins d'une minute : on coupe court
+    # plutôt que de laisser tourner le sondage pendant dix minutes.
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deploiement.outputs.page_url }}
