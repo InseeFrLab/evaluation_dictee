@@ -1,0 +1,100 @@
+name: Site
+
+# Construit le site Quarto (`website/`) et le publie sur GitHub Pages.
+#
+# Les pages « Résultats » et « Écarts » RE-EXÉCUTENT leur code Python au rendu :
+# elles relisent les prédictions exportées sur le S3 du SSP Cloud (le cache
+# `website/_freeze/` n'est volontairement pas versionné, cf. `.gitignore`).
+# Le runner a donc besoin des identifiants MinIO, fournis en secrets du dépôt :
+#
+#   AWS_ACCESS_KEY_ID       ┐ jetons MinIO du SSP Cloud
+#   AWS_SECRET_ACCESS_KEY   │ (page « Mon compte » → « Connexion au stockage »)
+#   AWS_SESSION_TOKEN       ┘ ⚠ ils EXPIRENT (7 jours max) : à renouveler.
+#
+# Optionnels, avec valeurs par défaut ci-dessous :
+#   AWS_S3_ENDPOINT (variable), S3_PREDICTIONS_PREFIX (secret ou variable)
+#
+# Sans identifiants valides le site se construit quand même : les pages
+# concernées affichent « — » et une note d'incident. Le déploiement n'échoue pas.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "src/**"
+      - "configs/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/site.yml"
+  workflow_dispatch: # publication manuelle (ex. après renouvellement des jetons)
+
+# Droits nécessaires au déploiement par artefact (pas de branche gh-pages).
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Une seule publication à la fois ; on ne coupe pas un déploiement en cours.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  construire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: "1.10.18" # même version qu'en local, pour un rendu identique
+
+      - name: Installer uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Installer Python et dépendances
+        run: |
+          uv python install 3.11
+          # `--extra website` apporte matplotlib et le noyau Jupyter dont le
+          # rendu a besoin ; le paquet du projet fournit les calculs.
+          uv sync --extra website
+
+      - name: Rendre le site
+        env:
+          # ── Accès au S3 du SSP Cloud (MinIO) ──────────────────────────────
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_DEFAULT_REGION: us-east-1
+          # `fsspec`/`s3fs` lisent l'endpoint dans l'environnement : on renseigne
+          # les trois noms reconnus selon les versions de botocore et de fsspec.
+          AWS_S3_ENDPOINT: ${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+          AWS_ENDPOINT_URL: https://${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+          FSSPEC_S3_ENDPOINT_URL: https://${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+          # ── Paramètres des pages de résultats (cf. website/_analyse.py) ───
+          # Valeur explicite : une variable vide écraserait le défaut du module.
+          S3_PREDICTIONS_PREFIX: ${{ vars.S3_PREDICTIONS_PREFIX || 's3://projet-production-ecrits-depp/predictions' }}
+        # Rendu depuis la RACINE du dépôt : `_analyse.py` remonte jusqu'au
+        # dossier contenant `src/evaluation_dictee` pour importer le paquet et
+        # résoudre `configs/grille_dictee_2015.json`.
+        run: uv run quarto render website
+
+      - name: Préparer l'artefact Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/_site
+
+  deployer:
+    needs: construire
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploiement.outputs.page_url }}
+    steps:
+      - name: Déployer sur GitHub Pages
+        id: deploiement
+        uses: actions/deploy-pages@v4
