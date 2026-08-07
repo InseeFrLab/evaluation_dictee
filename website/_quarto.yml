@@ -3,6 +3,13 @@ project:
   output-dir: _site
   render:
     - "*.qmd"
+    # Écarts IA – humain : la page détaille copie par copie la transcription
+    # produite par le modèle et le codage expert. Ce sont des productions
+    # écrites de mineurs, et ce site est public — la page n'est donc pas
+    # publiée. Elle reste rendable dans l'environnement sécurisé du SSP Cloud
+    # en retirant cette ligne. Voir aussi la note « Données sensibles » de
+    # `index.qmd` et le §6 de `CLAUDE.md`.
+    - "!ecarts.qmd"
     - "cards/*.qmd"
     - "slides/*.qmd"
   resources:
@@ -28,12 +35,10 @@ website:
         file: initialisation.qmd
       - text: "Architecture"
         file: architecture.qmd
-      - text: "Résultats"
-        file: resultats.qmd
-      - text: "Écarts IA – humain"
-        file: ecarts.qmd
       - text: "Évaluation & métriques"
         file: evaluation.qmd
+      - text: "Résultats"
+        file: resultats.qmd
       - text: "Fine-tuning"
         file: finetuning.qmd
       - text: "Présentations"

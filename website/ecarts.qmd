@@ -23,7 +23,11 @@ A.init_matplotlib()
 #: Nombre de copies détaillées.
 N_PIRES = 20
 
-RUNS = A.charger_runs()
+# Un seul modèle sur cette page : le détail copie par copie (statistiques,
+# transcription, deux codages en vis-à-vis) multiplié par chaque modèle donnerait
+# une page illisible et lourde de plusieurs mégaoctets. La comparaison entre
+# modèles vit sur la page « Résultats » ; ici on garde le modèle de référence.
+RUNS = A.charger_runs(modeles=[A.MODELE_REFERENCE])
 ITEMS, MOTS, RANGS = A.charger_grille()
 REF = A.RUN_REFERENCE if A.RUN_REFERENCE in RUNS else (next(iter(RUNS)) if RUNS else "")
 
@@ -31,6 +35,9 @@ REF = A.RUN_REFERENCE if A.RUN_REFERENCE in RUNS else (next(iter(RUNS)) if RUNS 
 # l'élève n'a rien écrit, ce qui ne dit rien de la qualité du codage. Le critère
 # est celui du pipeline (densité d'encre), relu depuis le marqueur `blank` du
 # JSONL. Elles sont récapitulées dans leur propre section, plus bas.
+# Page mono-modèle : le libellé de run porte le modèle, redondant ici. On affiche
+# donc la seule approche, tout en gardant les libellés complets comme clés.
+APPROCHE = {label: r.approche for label, r in RUNS.items()}
 BRUTS = {label: A.classement_ecarts(r.df) for label, r in RUNS.items()}
 VIERGES, CLASSEMENTS = {}, {}
 for label, classement in BRUTS.items():
@@ -83,6 +90,16 @@ if not RUNS:
     print("Vérifier `S3_PREDICTIONS_PREFIX` et l'export des prédictions.")
     print(":::")
     print(A.bloc_notes())
+else:
+    # Le modèle fait partie du nom du run exporté : on l'affiche, sinon rien ne
+    # dit sur quelles prédictions portent les écarts détaillés plus bas.
+    detail = " ; ".join(f"**{r.approche}** ({A.milliers(r.n_copies)} copies)" for r in RUNS.values())
+    modele = next(iter(RUNS.values())).modele
+    print('::: {.callout-note appearance="simple"}')
+    print(f"Cette page porte sur le **modèle `{modele}`** — {detail}.")
+    print("La comparaison entre modèles est sur la page")
+    print("[Résultats](resultats.qmd#comparaison-des-modeles-a-corpus-commun).")
+    print(":::")
 ```
 
 ## Comment les copies sont classées
@@ -150,7 +167,7 @@ if RUNS and MARQUEUR_OK:
     for label, vierges in VIERGES.items():
         lignes.append(
             [
-                f"Approche {label}",
+                f"Approche {APPROCHE[label]}",
                 A.milliers(len(vierges)),
                 A.pts(len(vierges) / len(BRUTS[label]) * 100, 2),
                 A.pts(vierges["pct_desaccord"].mean()) if not vierges.empty else "—",
@@ -182,13 +199,14 @@ if RUNS and MARQUEUR_OK:
 if ENCRE is None:
     print('::: {.callout-note appearance="simple"}')
     print(
-        "La distribution des densités d'encre n'est pas disponible : ni les "
-        "prédictions ni le corpus mesuré ne la portent. La produire en quelques "
-        "minutes, sans appel modèle ni GPU :\n"
+        "La distribution des densités d'encre n'est pas disponible : les runs "
+        "exportés ne portent pas la colonne `ink_ratio`, que le benchmark écrit "
+        "pourtant pour chaque copie. Ils sont donc antérieurs à cette mesure — "
+        "relancer le benchmark, puis réexporter :\n"
     )
     print("```bash")
-    print("uv run scripts/compute_ink_ratios.py \\")
-    print("    --config configs/scoring/dictee_end2end.yaml --export")
+    print("uv run scripts/run_benchmark.py      --config configs/scoring/dictee_end2end.yaml")
+    print("uv run scripts/export_predictions.py --config configs/scoring/dictee_end2end.yaml")
     print("```")
     print(":::")
 else:
@@ -347,7 +365,7 @@ Deux conséquences pratiques :
 if RUNS and MARQUEUR_OK and any(not v.empty for v in VIERGES.values()):
     print("::: {.panel-tabset}")
     for label, vierges in VIERGES.items():
-        print(f"\n## Approche {label}\n")
+        print(f"\n## Approche {APPROCHE[label]}\n")
         if vierges.empty:
             print("*Aucune copie vierge détectée dans ce run.*\n")
             continue
@@ -368,7 +386,7 @@ if RUNS and MARQUEUR_OK and any(not v.empty for v in VIERGES.values()):
                     "Erreurs vues par l'expert",
                 ],
                 lignes,
-                f"Copies vierges — approche {label}",
+                f"Copies vierges — approche {APPROCHE[label]}",
             )
         )
     print("\n:::")
@@ -392,7 +410,7 @@ if RUNS:
         pires = classement.head(N_PIRES)
         lignes.append(
             [
-                f"Approche {label}",
+                f"Approche {APPROCHE[label]}",
                 A.milliers(len(classement)),
                 A.pts(classement["pct_desaccord"].mean()),
                 A.pts(classement["pct_desaccord"].median()),
@@ -416,7 +434,7 @@ if RUNS:
     part = premier.head(N_PIRES)["n_desaccords"].sum() / premier["n_desaccords"].sum() * 100
     print(
         f"\n**Lecture** : les {N_PIRES} pires copies ne portent que "
-        f"{A.pts(part)} des désaccords totaux de l'approche {REF}. Les écarts ne "
+        f"{A.pts(part)} des désaccords totaux de l'approche {APPROCHE.get(REF, REF)}. Les écarts ne "
         "sont donc **pas concentrés sur une poignée de copies aberrantes** : ils "
         "sont diffus sur tout le corpus. Corriger ces cas extrêmes ne réglerait "
         "pas le problème de fond — mais ils restent le meilleur endroit pour "
@@ -436,7 +454,7 @@ if RUNS:
         n_ex_aequo = int((classement["pct_desaccord"] >= maxi - 1e-9).sum())
         if n_ex_aequo > N_PIRES:
             alertes.append(
-                f"**Approche {label}** — {n_ex_aequo} copies sont à égalité au "
+                f"**Approche {APPROCHE[label]}** — {n_ex_aequo} copies sont à égalité au "
                 f"désaccord maximal ({A.pts(maxi)}) : les {N_PIRES} retenues sont "
                 "les premières par identifiant, un choix arbitraire parmi elles."
             )
@@ -458,7 +476,7 @@ if RUNS:
         couleur = RUNS[label].couleur
         ax1.hist(
             classement["pct_desaccord"], bins=40, color=couleur, alpha=0.55,
-            edgecolor="white", linewidth=0.3, label=f"Approche {label}",
+            edgecolor="white", linewidth=0.3, label=f"Approche {APPROCHE[label]}",
         )
         seuil = classement.head(N_PIRES)["pct_desaccord"].min()
         ax1.axvspan(seuil, 100, color=couleur, alpha=0.10)
@@ -472,7 +490,7 @@ if RUNS:
     for label, classement in CLASSEMENTS.items():
         cumul = classement["n_desaccords"].cumsum() / classement["n_desaccords"].sum() * 100
         part_copies = np.arange(1, len(classement) + 1) / len(classement) * 100
-        ax2.plot(part_copies, cumul, color=RUNS[label].couleur, lw=2.2, label=f"Approche {label}")
+        ax2.plot(part_copies, cumul, color=RUNS[label].couleur, lw=2.2, label=f"Approche {APPROCHE[label]}")
     ax2.plot([0, 100], [0, 100], color="grey", ls="--", lw=1, label="répartition uniforme")
     ax2.set_xlabel("% de copies, des plus divergentes aux plus fidèles")
     ax2.set_ylabel("% cumulé des désaccords")
@@ -490,7 +508,7 @@ if RUNS:
 if RUNS:
     print("::: {.panel-tabset}")
     for label, classement in CLASSEMENTS.items():
-        print(f"\n## Approche {label}\n")
+        print(f"\n## Approche {APPROCHE[label]}\n")
         lignes = []
         for rang, (copy_id, ligne) in enumerate(classement.head(N_PIRES).iterrows(), start=1):
             lignes.append(
@@ -513,7 +531,7 @@ if RUNS:
                     "Items incodables (expert)",
                 ],
                 lignes,
-                f"Les {N_PIRES} copies les plus divergentes — approche {label}",
+                f"Les {N_PIRES} copies les plus divergentes — approche {APPROCHE[label]}",
             )
         )
     print("\n:::")
@@ -530,7 +548,7 @@ if len(RUNS) > 1 and REF:
         for label in autres
     }
     detail = " ; ".join(
-        f"**{n} copies sur {N_PIRES}** en commun avec l'approche {label}"
+        f"**{n} copies sur {N_PIRES}** en commun avec l'approche {APPROCHE[label]}"
         for label, n in communs.items()
     )
     print(
@@ -609,7 +627,7 @@ if RUNS and ITEMS:
     manquantes = {label: n for label, n in absentes.items() if n}
     if manquantes:
         detail = " ; ".join(
-            f"**{n} des {N_PIRES}** pour l'approche {label}" for label, n in manquantes.items()
+            f"**{n} des {N_PIRES}** pour l'approche {APPROCHE[label]}" for label, n in manquantes.items()
         )
         print('::: {.callout-warning appearance="simple"}')
         print(
@@ -650,7 +668,7 @@ if RUNS and ITEMS and REF:
             if sub.empty:
                 # Absence explicite : ce run n'a produit aucun codage pour la copie.
                 lignes_stats.append(
-                    [f"Approche {label}", *["—"] * 4, "*copie écartée par ce run*"]
+                    [f"Approche {APPROCHE[label]}", *["—"] * 4, "*copie écartée par ce run*"]
                 )
                 continue
             sub = sub.set_index("item_id")
@@ -666,7 +684,7 @@ if RUNS and ITEMS and REF:
             blocs[label] = (codes_modele, lectures, texte, provenance)
             lignes_stats.append(
                 [
-                    f"Approche {label}",
+                    f"Approche {APPROCHE[label]}",
                     A.pct((len(sub) - n_dis) / len(sub)),
                     f"{n_dis} / {len(sub)}",
                     str(int((sub["y_true"] != "1").sum())),
@@ -687,7 +705,7 @@ if RUNS and ITEMS and REF:
         # ── Transcription lue par le modèle ──────────────────────────────────
         for label, (_, _, texte, provenance) in blocs.items():
             print(
-                f"\n**Transcription par le modèle — approche {label}** "
+                f"\n**Transcription par le modèle — approche {APPROCHE[label]}** "
                 f"<small>({provenance})</small>\n"
             )
             if texte:
@@ -701,7 +719,7 @@ if RUNS and ITEMS and REF:
         print(A.codage_expert_html(ITEMS, codes_expert, codes_ref_modele))
         for label, (codes_modele, lectures, _, _) in blocs.items():
             print(
-                f"\n**Codage par le modèle — approche {label}** "
+                f"\n**Codage par le modèle — approche {APPROCHE[label]}** "
                 "<small>(vert = accord avec l'expert, rouge = désaccord)</small>\n"
             )
             print(A.codage_modele_html(ITEMS, codes_expert, codes_modele, lectures))

@@ -34,10 +34,15 @@ def _run_metadata(config: ExperimentConfig) -> dict[str, str]:
         config: Configuration de l'expérience à décrire.
 
     Returns:
-        Dictionnaire {modèle, méthode, schéma, n_few_shot, corpus} en chaînes.
+        Dictionnaire {modèle, modèle étape 2, approche, méthode, schéma, n_few_shot,
+        corpus} en chaînes. `model_stage2` vaut "-" en end_to_end.
     """
     return {
         "model": config.model.name,
+        # Sans ce champ, deux runs two_stage ne différant que par le modèle de codage
+        # sont indiscernables dans Langfuse.
+        "model_stage2": config.model_stage2.name if config.model_stage2 is not None else "-",
+        "approach": config.approach,
         "method": config.prompt.method,
         "scheme": config.grid.scheme,
         "n_few_shot": str(config.prompt.n_few_shot),
@@ -52,16 +57,23 @@ def _run_tags(config: ExperimentConfig) -> list[str]:
         config: Configuration de l'expérience.
 
     Returns:
-        Liste de tags (méthode, corpus, `scheme:…`, `model:…`, `run:<nom>`).
+        Liste de tags (méthode, corpus, `scheme:…`, `model:…`, éventuellement
+        `model_stage2:…`, `run:<nom>`).
     """
-    return [
+    tags = [
         config.prompt.method,
         config.data.corpus,
         f"scheme:{config.grid.scheme}",
         f"model:{config.model.name}",
-        # session_id unique par lancement : ce tag regroupe les lancements d'une config
-        f"run:{config.name}",
     ]
+    # Tag distinct seulement si l'étape 2 utilise un autre modèle : évite un tag
+    # redondant sur les runs two_stage mono-modèle, tout en rendant filtrables les
+    # runs qui croisent deux modèles.
+    if config.model_stage2 is not None and config.model_stage2.name != config.model.name:
+        tags.append(f"model_stage2:{config.model_stage2.name}")
+    # session_id unique par lancement : ce tag regroupe les lancements d'une config
+    tags.append(f"run:{config.name}")
+    return tags
 
 
 def _user_id() -> str | None:

@@ -7,18 +7,19 @@
 #  chaque paramètre (les champs omis reprennent leur valeur par défaut).
 #
 #  Lancer : uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml
-#  Sortie  : data/processed/dictee_two_stage_predictions.jsonl  (approach="two_stage")
+#  Sortie  : data/processed/dictee_two_stage_<modele>_predictions.jsonl
+#            (approach="two_stage" ; suffixe = modèle étape 1, + modèle étape 2 s'il diffère)
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: dictee_two_stage
 seed: 42
-concurrency: 8
+concurrency: 12
 
 approach: two_stage
 
 # Étape 1 = transcription (doit être multimodal pour lire l'image).
 model:
-  name: gemma4-26b-moe
+  name: qwen3-6-35b-moe # gemma4-26b-moe
   kind: vlm
   temperature: 0.0
   max_tokens: 8192
@@ -29,10 +30,13 @@ model:
 
 # Étape 2 = codage textuel (modèle texte seul, obligatoire en two_stage).
 model_stage2:
-  name: gemma4-26b-moe
+  name: qwen3-6-35b-moe # ou gemma4-26b-moe
   kind: llm
   temperature: 0.0
   max_tokens: 8192
+  structured_output: true
+  disable_thinking: true
+  max_retries: 2
 
 data:
   corpus: dictee

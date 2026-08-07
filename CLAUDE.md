@@ -161,10 +161,6 @@ uv run mypy src                 # typage
 # Lancer un benchmark à partir d'une config
 uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
 
-# Densité d'encre de chaque copie (détection des copies vierges, sans appel modèle).
-# Documente `data.blank_ink_threshold` et alimente la page « Écarts » du site.
-uv run scripts/compute_ink_ratios.py --config configs/scoring/dictee_end2end.yaml --export
-
 # Rendre le site Quarto (les pages recalculent leurs figures au rendu)
 uv sync --extra website
 uv run quarto render website
@@ -196,12 +192,29 @@ screen -ls                                                  # lister les session
 
 **Option 2 — nohup.** Sans interface interactive, log dans un fichier.
 ```bash
+ps -ef | grep run_benchmark | grep -v grep   # AVANT tout : rien ne doit tourner
 mkdir -p logs
-nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml \
-      > logs/dictee_REFERENCE.log 2>&1 &
-echo $! > logs/dictee_REFERENCE.pid          # noter le PID pour arrêter plus tard
-tail -f logs/dictee_REFERENCE.log            # suivre le log en direct
+
+# Un log DISTINCT par run : deux runs qui partagent un log sont illisibles après coup.
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml \
+      > logs/dictee_end2end.log 2>&1 &
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml \
+      > logs/dictee_two_stage.log 2>&1 &
+
+tail -f logs/dictee_end2end.log                        # suivre en direct
+head -20 logs/dictee_end2end.log | grep -i reprise     # la reprise a-t-elle pris ?
+
+# Arrêter : PAS `kill $(cat *.pid)`. `nohup uv run …` crée un wrapper `uv run` ET un
+# `python3 scripts/run_benchmark.py` ; `$!` ne capture que le wrapper, dont le kill
+# laisserait l'enfant orphelin continuer d'écrire (cause de runs concurrents observée).
+pkill -f "run_benchmark.py --config configs/scoring/dictee_end2end.yaml"
 ```
+
+> **Un seul run par fichier de sortie.** Deux runs qui appendent le même JSONL
+> dupliquent les copies et faussent les métriques. Un verrou `flock` sur
+> `<sortie>.lock` fait échouer le second dès le démarrage. Si un run annonce
+> `0 déjà faites` alors qu'un checkpoint existe, l'arrêter : le nom du fichier de
+> sortie ne correspond pas au checkpoint (modèle ou `name` différent).
 
 ### Checkpointing et reprise après crash
 
@@ -210,11 +223,17 @@ immédiatement** (`flush + fsync`). Effets :
 
 - Un crash à mi-run (API down, kernel tué, …) ne perd que la copie en cours.
 - Relancer la même commande **reprend automatiquement** où on s'était arrêté :
-  les copies déjà présentes dans `<run>_predictions.jsonl` sont sautées.
+  les copies déjà présentes dans `<run>_<modele>_predictions.jsonl` sont sautées.
 - Les copies qui lèvent une exception API sont loggées dans
-  `<run>_failed_copies.txt` et le run continue sur les suivantes. Elles seront
+  `<run>_<modele>_failed_copies.txt` et le run continue sur les suivantes. Elles seront
   retentées au prochain lancement.
-- Pour repartir de zéro, supprimer `<run>_predictions.jsonl` (ou changer
+- Une copie dont **aucun** item n'a pu être parsé (code `?` partout : réponse vide,
+  JSON cassé) n'est PAS considérée comme faite. `pipeline/purge.preparer_reprise`
+  la retire du JSONL au démarrage du run — sauvegarde en `<fichier>.bak` — et le run
+  la refait. Sans ce garde-fou, la reprise fige les échecs : c'est ce qui a laissé
+  84 copies entièrement `?` dans le run two_stage du 5 août 2026, alors que leur
+  cause avait été corrigée entre les deux lancements.
+- Pour repartir de zéro, supprimer `<run>_<modele>_predictions.jsonl` (ou changer
   `config.name`).
 
 ## 10. Pour un⋅e débutant⋅e

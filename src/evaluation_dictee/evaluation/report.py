@@ -27,8 +27,12 @@ def load_predictions(predictions_path: str | Path) -> pd.DataFrame:
     Args:
         predictions_path: chemin local ou S3 du JSONL (une prédiction par ligne).
 
+    Déduplique sur (copy_id, item_id) en gardant la DERNIÈRE occurrence : un fichier
+    écrit par deux runs concurrents contient la même copie plusieurs fois, ce qui
+    pèserait double dans toutes les métriques calculées en aval.
+
     Returns:
-        Un DataFrame, une ligne par item, avec les colonnes du JSONL.
+        Un DataFrame, une ligne par (copy_id, item_id), avec les colonnes du JSONL.
     """
     records = []
     with fsspec.open(str(predictions_path), "rt", encoding="utf-8") as f:
@@ -36,7 +40,10 @@ def load_predictions(predictions_path: str | Path) -> pd.DataFrame:
             line = line.strip()
             if line:
                 records.append(json.loads(line))
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    if not df.empty and {"copy_id", "item_id"}.issubset(df.columns):
+        df = df.drop_duplicates(subset=["copy_id", "item_id"], keep="last").reset_index(drop=True)
+    return df
 
 
 def per_item_metrics(df: pd.DataFrame, level: float = 0.95) -> pd.DataFrame:

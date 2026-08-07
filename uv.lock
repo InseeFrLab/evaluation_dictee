@@ -1388,6 +1388,8 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "langfuse" },
+    { name = "nbconvert" },
+    { name = "nbformat" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "openai" },
@@ -1418,7 +1420,6 @@ website = [
     { name = "ipykernel" },
     { name = "matplotlib" },
     { name = "nbclient" },
-    { name = "nbformat" },
 ]
 
 [package.dev-dependencies]
@@ -1440,7 +1441,8 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'notebooks'", specifier = ">=3.11.1" },
     { name = "matplotlib", marker = "extra == 'website'", specifier = ">=3.11.1" },
     { name = "nbclient", marker = "extra == 'website'", specifier = ">=0.10" },
-    { name = "nbformat", marker = "extra == 'website'", specifier = ">=5.10" },
+    { name = "nbconvert", specifier = ">=7.16" },
+    { name = "nbformat", specifier = ">=5.10" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "openai", specifier = ">=1.30" },
     { name = "pandas", specifier = ">=2.2" },

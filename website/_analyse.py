@@ -74,16 +74,45 @@ except ImportError as exc:  # noqa: BLE001 — la page doit rester rendable
 #: hors ligne : `export S3_PREDICTIONS_PREFIX=/chemin/vers/predictions`.
 PREFIX = os.environ.get("S3_PREDICTIONS_PREFIX", "s3://projet-production-ecrits-depp/predictions")
 
-#: Runs comparés côte à côte, dans l'ordre d'affichage : libellé → nom de run.
-#: Surchargeables pour comparer d'autres runs sans toucher aux pages.
-RUNS: dict[str, str] = {
-    "end-to-end": os.environ.get("RESULTATS_RUN_END_TO_END", "dictee_end2end"),
-    "two-stage": os.environ.get("RESULTATS_RUN_TWO_STAGE", "dictee_two_stage"),
+
+def _liste_env(variable: str, defaut: list[str]) -> list[str]:
+    """Lit une liste séparée par des virgules dans l'environnement."""
+    brut = os.environ.get(variable, "")
+    valeurs = [v.strip() for v in brut.split(",") if v.strip()]
+    return valeurs or defaut
+
+
+#: Approches comparées, dans l'ordre d'affichage : libellé → champ `name` du YAML.
+APPROCHES: dict[str, str] = {
+    "end-to-end": "dictee_end2end",
+    "two-stage": "dictee_two_stage",
 }
 
-#: Run servant de référence quand une analyse en exige un seul (classement des
-#: pires copies, courbe de renvoi). Par défaut l'approche privilégiée du projet.
-RUN_REFERENCE = os.environ.get("RESULTATS_RUN_REFERENCE", "end-to-end")
+#: Modèles comparés, dans l'ordre d'affichage. Le benchmark suffixe TOUJOURS ses
+#: sorties par le nom du modèle (`<name>_<modele>_predictions.jsonl`, cf.
+#: `config.run_output_name`) : le site nomme donc le modèle pour retrouver le
+#: fichier. Un modèle non exporté est simplement omis, avec une note — on ne
+#: substitue JAMAIS un autre modèle, ce qui fausserait la comparaison.
+MODELES: list[str] = _liste_env("RESULTATS_MODELES", ["gemma4-26b-moe", "qwen3-6-35b-moe"])
+
+#: Modèle utilisé par les pages qui n'ont pas d'axe « modèle » (page « Écarts »,
+#: dont le détail copie par copie serait illisible multiplié par les modèles).
+MODELE_REFERENCE = os.environ.get("RESULTATS_MODELE_REFERENCE", MODELES[0])
+
+#: Approche de référence quand une analyse exige un run unique (classement des
+#: pires copies, tri des items). Par défaut l'approche privilégiée du projet.
+APPROCHE_REFERENCE = os.environ.get("RESULTATS_APPROCHE_REFERENCE", "end-to-end")
+
+
+def libelle_run(approche: str, modele: str) -> str:
+    """Libellé d'un run croisant une approche et un modèle (clé des dictionnaires)."""
+    return f"{approche} · {modele}"
+
+
+#: Run servant de référence quand une analyse en exige un seul.
+RUN_REFERENCE = os.environ.get(
+    "RESULTATS_RUN_REFERENCE", libelle_run(APPROCHE_REFERENCE, MODELE_REFERENCE)
+)
 
 #: Chemin de la grille de codage (mots attendus, ordre de la dictée).
 GRID_PATH = os.environ.get("RESULTATS_GRID_PATH", "configs/grille_dictee_2015.json")
@@ -117,10 +146,6 @@ SEUIL_ENCRE_PIPELINE = 0.025
 #: Colonne portant la densité d'encre mesurée, quand elle est disponible.
 COLONNE_ENCRE = "ink_ratio"
 
-#: Fichier de distribution des densités d'encre, produit par
-#: `scripts/compute_ink_ratios.py` et cherché à côté des prédictions.
-FICHIER_ENCRE = os.environ.get("RESULTATS_FICHIER_ENCRE", "dictee_ink_ratios.csv")
-
 # ── Palette ───────────────────────────────────────────────────────────────────
 C_EXPERT = "#1f4e79"
 C_MODELE = "#c44536"
@@ -146,6 +171,35 @@ def init_matplotlib() -> None:
             "font.size": 9.5,
         }
     )
+
+
+def grille_axes(n: int, largeur: float = 7.5, hauteur: float = 7.0, ncols: int = 2):
+    """Grille de sous-graphiques à `n` panneaux, sur au plus `ncols` colonnes.
+
+    Les figures « un panneau par run » deviennent illisibles alignées sur une
+    seule ligne dès qu'on croise les approches et les modèles : au-delà de deux
+    panneaux, on passe à la ligne plutôt que d'écraser chaque panneau.
+
+    Args:
+        n: nombre de panneaux utiles.
+        largeur: largeur d'un panneau, en pouces.
+        hauteur: hauteur d'un panneau, en pouces.
+        ncols: nombre maximal de colonnes.
+
+    Returns:
+        Le couple (figure, liste des `n` axes), les axes en trop étant masqués.
+    """
+    import matplotlib.pyplot as plt
+
+    ncols = max(1, min(ncols, n))
+    nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(largeur * ncols, hauteur * nrows), squeeze=False
+    )
+    plats = [ax for ligne in axes for ax in ligne]
+    for ax in plats[n:]:
+        ax.set_visible(False)
+    return fig, plats[:n]
 
 
 # ── Formatage ─────────────────────────────────────────────────────────────────
@@ -208,6 +262,26 @@ def table_markdown(entetes: list[str], lignes: list[list[str]], legende: str = "
     return "\n".join(out)
 
 
+# Ancre de la définition de chaque métrique sur la page « Évaluation & métriques ».
+# Les tableaux de résultats n'affichent donc plus le sens de lecture ni la méthode
+# d'intervalle : ils y renvoient, pour rester lisibles.
+ANCRES_METRIQUES: dict[str, str] = {
+    "Accord brut": "accord-brut",
+    "Kappa de Cohen": "kappa",
+    "Rappel des erreurs (sensibilité)": "rappel",
+    "Précision sur les erreurs": "precision",
+    "Taux de sur-correction": "sur-correction",
+    "Taux de sur-détection": "sur-detection",
+    "ECE (calibration)": "ece",
+}
+
+
+def lien_metrique(metrique: str, page: str = "evaluation.qmd") -> str:
+    """Nom de métrique transformé en lien vers sa définition (inchangé si inconnue)."""
+    ancre = ANCRES_METRIQUES.get(metrique)
+    return f"[{metrique}]({page}#{ancre})" if ancre else metrique
+
+
 def bloc_notes() -> str:
     """Callout replié listant les incidents de chargement (vide si aucun)."""
     if not NOTES:
@@ -228,6 +302,8 @@ class Run:
 
     label: str
     nom: str
+    approche: str
+    modele: str
     couleur: str
     df: pd.DataFrame
     copies: pd.DataFrame = field(repr=False)
@@ -244,39 +320,167 @@ class Run:
         return len(self.df)
 
 
+#: Suffixes des fichiers exportés (cf. `utils/s3_export.py`). Le suffixe HTR se
+#: termine par celui du scoring : ne jamais tester l'un sans écarter l'autre.
+SUFFIXE_SCORING = "_predictions.jsonl"
+SUFFIXE_HTR = "_htr_predictions.jsonl"
+
+
 def _chemin(nom_run: str) -> str:
     """URI du JSONL de prédictions d'un run."""
-    return PREFIX.rstrip("/") + "/" + nom_run + "_predictions.jsonl"
+    return PREFIX.rstrip("/") + "/" + nom_run + SUFFIXE_SCORING
 
 
-def charger_runs() -> dict[str, Run]:
-    """Charge tous les runs de `RUNS` et calcule leurs agrégats par item et copie.
+#: Nom des runs de scoring exportés à côté de `PREFIX`, listés une seule fois.
+_EXPORTES: list[str] | None = None
+
+
+def _noms_exportes() -> list[str]:
+    """Noms des runs de scoring exportés à côté de `PREFIX`, triés.
+
+    On liste le RÉPERTOIRE, jamais un motif `<base>_*` : sur S3, un glob par
+    préfixe fait mettre en cache par s3fs une vue *partielle* du répertoire,
+    après quoi les autres fichiers deviennent invisibles — y compris pour
+    `load_predictions`, qui échouerait alors sur un fichier bien présent.
 
     Returns:
-        Les runs chargés, indexés par libellé, dans l'ordre de `RUNS`. Un run
-        absent ou illisible est omis et l'incident consigné dans `NOTES`.
+        Les noms de runs (suffixe de modèle compris, `_predictions.jsonl` ôté),
+        hors runs HTR. Liste vide si le préfixe est injoignable.
+    """
+    global _EXPORTES
+    if _EXPORTES is None:
+        import fsspec
+
+        try:
+            fs, _, _ = fsspec.get_fs_token_paths(PREFIX)
+            entrees = [str(e) for e in fs.ls(PREFIX.rstrip("/"), detail=False)]
+        except Exception:  # noqa: BLE001 — la page doit rester rendable
+            entrees = []
+        _EXPORTES = sorted(
+            Path(e).name.removesuffix(SUFFIXE_SCORING)
+            for e in entrees
+            if e.endswith(SUFFIXE_SCORING) and not e.endswith(SUFFIXE_HTR)
+        )
+    return _EXPORTES
+
+
+def _run_du_modele(base: str, modele: str) -> str | None:
+    """Nom du run exporté qui croise une approche et un modèle, None s'il manque.
+
+    Deux formes sont acceptées, toutes deux produites par `run_output_name` :
+    `<base>_<modele>` (un seul modèle) et `<base>_<modele>_<modele_etape2>`
+    (two_stage dont l'étape 2 utilise un autre modèle). Le modèle demandé est
+    donc toujours celui de l'ÉTAPE 1.
+
+    Args:
+        base: champ `name` du run (ex. `dictee_end2end`).
+        modele: nom du modèle tel que servi sur llm.lab.
+
+    Returns:
+        Le nom du run exporté, ou None si aucun ne correspond.
+    """
+    attendu = f"{base}_{modele}"
+    candidats = [n for n in _noms_exportes() if n == attendu or n.startswith(f"{attendu}_")]
+    return candidats[0] if candidats else None
+
+
+def _modele_du_run(df: pd.DataFrame, nom: str, base: str) -> str:
+    """Modèle(s) d'un run, lu dans les prédictions ou, à défaut, dans son nom.
+
+    Les runs récents estampillent chaque ligne d'un `model` (et d'un
+    `model_stage2` en two_stage) : c'est la source la plus fiable, et la seule
+    qui distingue les deux étapes. Les runs plus anciens ne portent pas ces
+    colonnes — on retombe alors sur le suffixe du nom de fichier, posé par
+    `config.run_output_name`.
+
+    Args:
+        df: prédictions du run.
+        nom: nom du run (préfixe des fichiers de sortie).
+        base: champ `name` du run, à ôter du nom pour isoler le suffixe.
+
+    Returns:
+        Le modèle, sous la forme `<étape 1>` ou `<étape 1> → <étape 2>`.
+    """
+    if "model" in df.columns and df["model"].notna().any():
+        etape1 = str(df["model"].dropna().iloc[0])
+        etape2 = ""
+        if "model_stage2" in df.columns and df["model_stage2"].notna().any():
+            etape2 = str(df["model_stage2"].dropna().iloc[0])
+        return etape1 if etape2 in ("", etape1) else f"{etape1} → {etape2}"
+    if nom.startswith(f"{base}_"):
+        return nom[len(base) + 1 :].replace("_", " → ")
+    return "—"
+
+
+def runs_attendus(modeles: list[str] | None = None) -> dict[str, str]:
+    """Runs à afficher : libellé (approche × modèle) → nom de run attendu.
+
+    Args:
+        modeles: modèles à croiser avec les approches. [défaut : `MODELES`]
+
+    Returns:
+        Le dictionnaire des runs attendus, modèles en boucle interne pour que
+        les deux approches d'un même modèle restent voisines à l'affichage.
+    """
+    return {
+        libelle_run(approche, modele): f"{base}_{modele}"
+        for approche, base in APPROCHES.items()
+        for modele in (modeles if modeles is not None else MODELES)
+    }
+
+
+def charger_runs(modeles: list[str] | None = None) -> dict[str, Run]:
+    """Charge les runs croisant chaque approche et chaque modèle demandé.
+
+    Un modèle non exporté est **omis**, jamais remplacé par un autre : la page
+    compare les modèles entre eux, une substitution silencieuse y attribuerait
+    les chiffres d'un modèle à un autre.
+
+    Args:
+        modeles: modèles à charger. [défaut : `MODELES`, tous comparés]
+
+    Returns:
+        Les runs chargés, indexés par libellé `approche · modèle`. Un run absent
+        ou illisible est omis et l'incident consigné dans `NOTES`.
     """
     if not PAQUET_OK:
         return {}
+    demandes = modeles if modeles is not None else MODELES
     runs: dict[str, Run] = {}
-    for i, (label, nom) in enumerate(RUNS.items()):
-        if not nom:
-            continue
-        try:
-            df = load_predictions(_chemin(nom))
-        except Exception as exc:  # noqa: BLE001 — la page doit rester rendable
-            NOTES.append(f"`{nom}` indisponible ({type(exc).__name__}) : colonne non calculée.")
-            continue
-        if df.empty:
-            NOTES.append(f"`{nom}` est vide : colonne non calculée.")
-            continue
-        runs[label] = Run(
-            label=label,
-            nom=nom,
-            couleur=COULEURS_RUN[i % len(COULEURS_RUN)],
-            df=df,
-            copies=per_copy_metrics(df),
-            items=per_item_metrics(df),
+    manquants: list[str] = []
+    i = 0
+    for approche, base in APPROCHES.items():
+        for modele in demandes:
+            label = libelle_run(approche, modele)
+            nom = _run_du_modele(base, modele)
+            if nom is None:
+                manquants.append(f"`{base}_{modele}`")
+                continue
+            try:
+                df = load_predictions(_chemin(nom))
+            except Exception as exc:  # noqa: BLE001 — la page doit rester rendable
+                NOTES.append(f"`{nom}` illisible ({type(exc).__name__}) : run omis.")
+                continue
+            if df.empty:
+                NOTES.append(f"`{nom}` est vide : run omis.")
+                continue
+            runs[label] = Run(
+                label=label,
+                nom=nom,
+                approche=approche,
+                modele=_modele_du_run(df, nom, base),
+                couleur=COULEURS_RUN[i % len(COULEURS_RUN)],
+                df=df,
+                copies=per_copy_metrics(df),
+                items=per_item_metrics(df),
+            )
+            i += 1
+    if manquants:
+        NOTES.append(
+            f"Non exporté(s), donc absent(s) des comparaisons : {', '.join(manquants)}. "
+            "Lancer le run puis `uv run scripts/export_predictions.py --config … "
+            "--model-name <modèle>`. Runs disponibles sous "
+            f"`{PREFIX}` : {', '.join(f'`{n}`' for n in _noms_exportes()) or 'aucun'}."
         )
     if not runs:
         NOTES.append(
@@ -284,6 +488,45 @@ def charger_runs() -> dict[str, Run]:
             "l'export (`uv run scripts/export_predictions.py --config …`)."
         )
     return runs
+
+
+def restreindre_corpus_commun(runs: dict[str, Run]) -> tuple[dict[str, Run], int]:
+    """Restreint tous les runs aux copies qu'ils ont TOUS traitées.
+
+    Comparer deux modèles sur des corpus différents (run inachevé, copies
+    abandonnées à la transcription) confond l'effet du modèle avec celui de la
+    composition de l'échantillon : les copies difficiles ne se répartissent pas
+    au hasard. Cette restriction est la seule façon de lire un écart entre
+    modèles comme un écart de qualité.
+
+    Args:
+        runs: runs chargés par `charger_runs`.
+
+    Returns:
+        Le couple (runs restreints aux copies communes, nombre de ces copies).
+        Les runs sont renvoyés tels quels si le corpus est déjà commun.
+    """
+    if not runs:
+        return {}, 0
+    commun: set[str] = set.intersection(*(set(r.df["copy_id"].unique()) for r in runs.values()))
+    if not commun:
+        return {}, 0
+    if all(r.n_copies == len(commun) for r in runs.values()):
+        return runs, len(commun)
+    restreints: dict[str, Run] = {}
+    for label, r in runs.items():
+        df = r.df[r.df["copy_id"].isin(commun)].reset_index(drop=True)
+        restreints[label] = Run(
+            label=r.label,
+            nom=r.nom,
+            approche=r.approche,
+            modele=r.modele,
+            couleur=r.couleur,
+            df=df,
+            copies=per_copy_metrics(df),
+            items=per_item_metrics(df),
+        )
+    return restreints, len(commun)
 
 
 def charger_grille() -> tuple[list[GridItem], dict[str, str], dict[str, int]]:
@@ -675,20 +918,18 @@ def seuil_encre() -> float:
 def charger_densites_encre(runs: dict[str, Run]) -> tuple[pd.DataFrame | None, str]:
     """Densité d'encre par copie, et provenance de la mesure.
 
-    Deux sources, par ordre de préférence :
-
-    1. la colonne `ink_ratio` du JSONL, écrite par le benchmark en même temps
-       qu'il applique le seuil — c'est la mesure qui a réellement décidé ;
-    2. le CSV produit par `scripts/compute_ink_ratios.py`, qui mesure le corpus
-       sans appel modèle (utile avant d'avoir relancé le benchmark).
+    Source unique : la colonne `ink_ratio` du JSONL, que le benchmark écrit en même
+    temps qu'il applique le seuil de copie vierge — c'est donc exactement la mesure
+    qui a décidé. La mesure vit dans le pipeline et nulle part ailleurs : il n'existe
+    pas de fichier de densités produit à côté, qui pourrait diverger de lui.
 
     Args:
         runs: runs chargés par `charger_runs`.
 
     Returns:
         Le couple (DataFrame indexé par copy_id avec la colonne `ink_ratio`,
-        libellé de provenance). Le DataFrame vaut None si aucune source n'est
-        disponible ; l'incident est alors consigné dans `NOTES`.
+        libellé de provenance). Le DataFrame vaut None si aucun run ne porte la
+        colonne ; l'incident est alors consigné dans `NOTES`.
     """
     for label, run in runs.items():
         if COLONNE_ENCRE in run.df.columns:
@@ -696,25 +937,12 @@ def charger_densites_encre(runs: dict[str, Run]) -> tuple[pd.DataFrame | None, s
             if len(serie):
                 return serie.to_frame(COLONNE_ENCRE), f"prédictions du run {label}"
 
-    # Import local : `fsspec` arrive avec s3fs, mais la page doit rester rendable
-    # même dans un environnement où le paquet du projet n'est pas installé.
-    chemin = PREFIX.rstrip("/") + "/" + FICHIER_ENCRE
-    try:
-        import fsspec
-
-        with fsspec.open(chemin, "rt", encoding="utf-8") as f:
-            mesures = pd.read_csv(f, sep=";")
-    except Exception as exc:  # noqa: BLE001 — la page doit rester rendable
-        NOTES.append(
-            f"Distribution des densités d'encre indisponible ({type(exc).__name__}) : "
-            f"section omise. La produire avec `uv run scripts/compute_ink_ratios.py "
-            f"--config configs/scoring/dictee_end2end.yaml --export`."
-        )
-        return None, ""
-    if COLONNE_ENCRE not in mesures.columns or "copy_id" not in mesures.columns:
-        NOTES.append(f"`{FICHIER_ENCRE}` n'a pas les colonnes attendues : section omise.")
-        return None, ""
-    return mesures.set_index("copy_id")[[COLONNE_ENCRE]], f"`{FICHIER_ENCRE}`"
+    NOTES.append(
+        f"Aucun run ne porte la colonne `{COLONNE_ENCRE}` : distribution des densités "
+        "d'encre omise. Ces runs sont antérieurs à la mesure de densité — relancer le "
+        "benchmark et réexporter pour l'obtenir."
+    )
+    return None, ""
 
 
 def marqueur_vierge_disponible(runs: dict[str, Run]) -> bool:

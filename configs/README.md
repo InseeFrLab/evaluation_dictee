@@ -39,6 +39,43 @@ uv run scripts/finetune_htr_scoledit.py --config configs/finetune/finetune_REFER
 > nombre de copies (mettre `5`–`20` pour un test, `null` pour tout le corpus) et
 > **`model.name`** est le seul champ à changer pour tester un autre modèle.
 
+> **Comparer deux modèles sans dupliquer les YAML** : `run_benchmark.py` (et la
+> commande `eval-ecrit benchmark`) acceptent `--model-name` (étape 1 / unique
+> étape en end_to_end) et `--model-stage2-name` (étape 2, two_stage
+> uniquement) pour surcharger `model.name` / `model_stage2.name` sans éditer le
+> fichier. Les noms passés doivent correspondre EXACTEMENT à ceux servis sur
+> [llm.lab.sspcloud.fr](https://llm.lab.sspcloud.fr).
+>
+> Le fichier de sortie est **toujours** suffixé par le(s) modèle(s) utilisé(s) —
+> `data/processed/<name>_<modele>_predictions.jsonl` — que le modèle vienne du
+> YAML ou d'une surcharge CLI, pour ne jamais écraser le checkpoint d'un autre
+> modèle. Le suffixe n'est ajouté qu'une fois (cf. `run_output_name`), et le
+> modèle de l'étape 2 n'y figure que s'il diffère de celui de l'étape 1. Le nom
+> du modèle est en outre inscrit dans **chaque ligne** du JSONL (champs `model`
+> et `model_stage2`), donc l'information survit à une fusion ou à un renommage.
+>
+> Exemple : comparer `gemma4-26b-moe` à `qwen3.6-35b-moe` sur les deux
+> approches (4 fichiers de prédictions) :
+> ```bash
+> # qwen3-6-35b-moe (modèle inscrit dans les YAML, rien à surcharger)
+> uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml
+> uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml
+>
+> # gemma4-26b-moe (surcharge du modèle)
+> uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml \
+>       --model-name gemma4-26b-moe
+> uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml \
+>       --model-name gemma4-26b-moe --model-stage2-name gemma4-26b-moe
+> ```
+> → `dictee_end2end_qwen3-6-35b-moe_predictions.jsonl`,
+> `dictee_two_stage_qwen3-6-35b-moe_predictions.jsonl`,
+> `dictee_end2end_gemma4-26b-moe_predictions.jsonl`,
+> `dictee_two_stage_gemma4-26b-moe_predictions.jsonl`.
+>
+> **Un seul run à la fois par fichier de sortie** : un second run visant le même
+> fichier échoue immédiatement sur le verrou `<sortie>.lock`. Deux runs qui
+> appendent le même JSONL dupliquent les copies et faussent les métriques.
+
 ---
 
 ## Famille 1 — Scoring dictée (`scoring/`)

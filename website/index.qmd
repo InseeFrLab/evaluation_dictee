@@ -20,7 +20,7 @@ coûteuse (5 à 10 minutes par copie), et donc difficile à passer à l'échelle
 **La question du projet** : est-ce que l'IA peut être un nouvel outil permettant d'accélérer
 l'évaluation des copies et être cfomplémentaire à la correction manuelle faite par les professeurs ? 
 
-## La tâche, concrètement
+## La tâche
 
 Chaque **item** (un mot ou un signe de ponctuation) écrit par l'élève reçoit un **code**.
 Dans un premier temps, la cible principale du projet est une **grille simplifiée** à trois modalités :
@@ -73,9 +73,8 @@ Ces deux approches sont détaillées dans la page **[Résultats](resultats.qmd)*
 | Page | Ce que vous y trouverez |
 |------|-------------------------|
 | **[Architecture](architecture.qmd)** | Comment le projet est organisé : du scan à la métrique, brique par brique. |
+| **[Évaluation & métriques](evaluation.qmd)** | Chaque métrique définie et sa formule : ce qu'elle mesure, son sens de lecture, et comment son intervalle de confiance est calculé. **À lire avant les résultats.** |
 | **[Résultats](resultats.qmd)** | Les deux approches en détail, les tableaux de comparaison et l'analyse complète du benchmark. |
-| **[Écarts IA – humain](ecarts.qmd)** | Les 20 copies où le modèle et l'annotateur expert divergent le plus, décortiquées item par item. |
-| **[Évaluation & métriques](evaluation.qmd)** | Chaque métrique expliquée : ce qu'elle mesure et pourquoi. |
 | **[Fine-tuning](finetuning.qmd)** | Spécialiser un modèle à l'écriture d'enfants. |
 
 ::: {.callout-important appearance="simple"}

@@ -15,7 +15,12 @@ import pytest
 
 from evaluation_dictee.config import ExperimentConfig
 from evaluation_dictee.data.loaders import Copy
-from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
+from evaluation_dictee.models.base import (
+    CODE_NON_PARSE,
+    CopyPrediction,
+    ItemPrediction,
+    Scorer,
+)
 from evaluation_dictee.pipeline import benchmark as bench
 
 
@@ -113,8 +118,8 @@ def test_concurrent_matches_sequential(patched, monkeypatch, tmp_path: Path) -> 
     bench.run_benchmark(_config(12), FakeScorer(), output_dir=seq_dir, concurrency=1)
     bench.run_benchmark(_config(12), FakeScorer(), output_dir=par_dir, concurrency=8)
 
-    assert _read_lines(seq_dir / "test_run_predictions.jsonl") == _read_lines(
-        par_dir / "test_run_predictions.jsonl"
+    assert _read_lines(seq_dir / "test_run_fake_predictions.jsonl") == _read_lines(
+        par_dir / "test_run_fake_predictions.jsonl"
     )
 
 
@@ -138,9 +143,10 @@ def test_failures_and_non_transcribed(patched, monkeypatch, tmp_path: Path) -> N
     result = bench.run_benchmark(_config(6), scorer, output_dir=tmp_path, concurrency=4)
 
     assert "c002.png" in result.non_transcribed
-    assert (tmp_path / "test_run_failed_copies.txt").exists()
+    assert (tmp_path / "test_run_fake_failed_copies.txt").exists()
     written = {
-        json.loads(line)["copy_id"] for line in _read_lines(tmp_path / "test_run_predictions.jsonl")
+        json.loads(line)["copy_id"]
+        for line in _read_lines(tmp_path / "test_run_fake_predictions.jsonl")
     }
     assert "c001.png" not in written  # échec → non écrit
     assert "c002.png" not in written  # non transcrite → non écrit
@@ -160,7 +166,7 @@ def test_copie_vierge_auto_codee_zero(patched, monkeypatch, tmp_path: Path) -> N
 
     assert result.blank_copies == ["c001.png"]
     assert "c001.png" not in scorer.scored  # aucune inférence sur une copie vierge
-    recs = [json.loads(line) for line in _read_lines(tmp_path / "test_run_predictions.jsonl")]
+    recs = [json.loads(line) for line in _read_lines(tmp_path / "test_run_fake_predictions.jsonl")]
     vierge = [r for r in recs if r["copy_id"] == "c001.png"]
     assert len(vierge) == 3
     assert all(r["y_pred"] == "0" for r in vierge)
@@ -171,11 +177,115 @@ def test_copie_vierge_auto_codee_zero(patched, monkeypatch, tmp_path: Path) -> N
     assert all(r["blank"] is False for r in non_vierge)
 
 
+def test_nom_fichier_inclut_toujours_le_modele(patched, monkeypatch, tmp_path: Path) -> None:
+    """Le fichier de sortie porte le modèle, et le suffixe n'est ajouté qu'une fois.
+
+    Régression : `benchmark` ajoutait `model.name` à un `name` que
+    `override_model_names` avait déjà suffixé, d'où deux fichiers distincts pour un
+    même run selon son mode de lancement (et donc un checkpoint jamais retrouvé).
+    """
+    copies = _copies(2)
+    monkeypatch.setattr(bench, "load_dataset", lambda **_k: copies)
+
+    # Cas 1 : modèle lu dans le YAML (`name` non suffixé).
+    bench.run_benchmark(_config(2), FakeScorer(), output_dir=tmp_path, concurrency=1)
+    assert (tmp_path / "test_run_fake_predictions.jsonl").exists()
+
+    # Cas 2 : lancement CLI, où `name` porte déjà le suffixe. Même fichier attendu.
+    deja_suffixe = _config(2).model_copy(update={"name": "test_run_fake"})
+    bench.run_benchmark(deja_suffixe, FakeScorer(), output_dir=tmp_path, concurrency=1)
+
+    produits = sorted(p.name for p in tmp_path.glob("*_predictions.jsonl"))
+    assert produits == ["test_run_fake_predictions.jsonl"]
+
+
+def test_nom_fichier_slugifie_le_modele(patched, monkeypatch, tmp_path: Path) -> None:
+    """Un nom de modèle contenant « / » ne crée pas de sous-dossier fantôme."""
+    monkeypatch.setattr(bench, "load_dataset", lambda **_k: _copies(1))
+    config = _config(1).model_copy(
+        update={"model": _config(1).model.model_copy(update={"name": "Qwen/Qwen2.5-VL-7B"})}
+    )
+
+    bench.run_benchmark(config, FakeScorer(), output_dir=tmp_path, concurrency=1)
+
+    assert (tmp_path / "test_run_Qwen-Qwen2.5-VL-7B_predictions.jsonl").exists()
+
+
+def test_modele_inscrit_dans_chaque_ligne(patched, monkeypatch, tmp_path: Path) -> None:
+    """Chaque ligne du JSONL porte le modèle, y compris celui de l'étape 2."""
+    monkeypatch.setattr(bench, "load_dataset", lambda **_k: _copies(2))
+    config = ExperimentConfig.model_validate(
+        {
+            "name": "test_run",
+            "approach": "two_stage",
+            "model": {"name": "vlm-etape1"},
+            "model_stage2": {"name": "llm-etape2", "kind": "llm"},
+            "data": {"images_path": "x", "labels_path": "y"},
+        }
+    )
+
+    bench.run_benchmark(config, FakeScorer(), output_dir=tmp_path, concurrency=1)
+
+    out = tmp_path / "test_run_vlm-etape1_llm-etape2_predictions.jsonl"
+    recs = [json.loads(line) for line in _read_lines(out)]
+    assert recs
+    assert all(r["model"] == "vlm-etape1" for r in recs)
+    assert all(r["model_stage2"] == "llm-etape2" for r in recs)
+
+
+def test_model_stage2_absent_en_end_to_end(patched, monkeypatch, tmp_path: Path) -> None:
+    """En end_to_end, `model_stage2` est explicitement None (et non absent)."""
+    monkeypatch.setattr(bench, "load_dataset", lambda **_k: _copies(1))
+
+    bench.run_benchmark(_config(1), FakeScorer(), output_dir=tmp_path, concurrency=1)
+
+    recs = [json.loads(line) for line in _read_lines(tmp_path / "test_run_fake_predictions.jsonl")]
+    assert all(r["model"] == "fake" and r["model_stage2"] is None for r in recs)
+
+
+def test_verrou_bloque_un_second_run_sur_le_meme_fichier(tmp_path: Path) -> None:
+    """Deux runs visant le même JSONL : le second échoue au lieu d'y dupliquer des copies."""
+    out = tmp_path / "test_run_fake_predictions.jsonl"
+
+    # Les contextes sont entrés de gauche à droite : la seconde prise de verrou lève,
+    # et `pytest.raises`, déjà actif, l'intercepte.
+    with (
+        bench._single_writer(out),
+        pytest.raises(RuntimeError, match="Un autre run écrit déjà"),
+        bench._single_writer(out),
+    ):
+        pass
+
+    # Verrou relâché à la sortie du bloc : un run suivant repasse.
+    with bench._single_writer(out):
+        pass
+
+
+def test_lignes_dupliquees_exclues_des_metriques(patched, monkeypatch, tmp_path: Path) -> None:
+    """Une copie écrite deux fois (runs concurrents) ne pèse qu'une fois dans les métriques."""
+    copies = _copies(5)
+    monkeypatch.setattr(bench, "load_dataset", lambda **_k: copies)
+
+    # c000 pré-écrite EN DOUBLE, comme l'aurait fait un second run concurrent.
+    out = tmp_path / "test_run_fake_predictions.jsonl"
+    doublons = [
+        json.dumps({"copy_id": "c000.png", "item_id": f"i0_{k}", "y_true": "1", "y_pred": "1"})
+        for k in (1, 2, 3)
+    ] * 2
+    out.write_text("\n".join(doublons) + "\n", encoding="utf-8")
+
+    result = bench.run_benchmark(_config(5), FakeScorer(), output_dir=tmp_path, concurrency=1)
+
+    # 5 copies × 3 items = 15 items distincts, malgré les 6 lignes écrites pour c000.
+    assert result.metrics.n_items == 15
+    assert len(result.y_true) == 15
+
+
 def test_resume_skips_processed(patched, monkeypatch, tmp_path: Path) -> None:
     """Une copie déjà présente dans le JSONL n'est pas re-scorée."""
     copies = _copies(5)
     monkeypatch.setattr(bench, "load_dataset", lambda **_k: copies)
-    out = tmp_path / "test_run_predictions.jsonl"
+    out = tmp_path / "test_run_fake_predictions.jsonl"
     out.write_text(
         json.dumps({"copy_id": "c000.png", "item_id": "i0_1", "y_true": "1", "y_pred": "1"}) + "\n",
         encoding="utf-8",
@@ -186,3 +296,38 @@ def test_resume_skips_processed(patched, monkeypatch, tmp_path: Path) -> None:
 
     assert "c000.png" not in scorer.scored  # sautée à la reprise
     assert len(scorer.scored) == 4
+
+
+def test_reprise_refait_les_copies_non_exploitables(patched, monkeypatch, tmp_path: Path) -> None:
+    """Bout en bout : un run relancé recode les copies dont aucun item n'était parsé.
+
+    Le premier run écrit tout ; on abîme ensuite une copie comme l'aurait fait un
+    échec d'appel (tous les items non parsés). Le second run doit la refaire — et
+    elle seule.
+    """
+    copies = _copies(4)
+    monkeypatch.setattr(bench, "load_dataset", lambda **_k: copies)
+    out = tmp_path / "test_run_fake_predictions.jsonl"
+
+    bench.run_benchmark(_config(4), FakeScorer(), output_dir=tmp_path, concurrency=2)
+
+    abimee = "c002.png"
+    lignes = []
+    for ligne in out.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(ligne)
+        if rec["copy_id"] == abimee:
+            rec["y_pred"] = CODE_NON_PARSE
+        lignes.append(json.dumps(rec))
+    out.write_text("\n".join(lignes) + "\n", encoding="utf-8")
+
+    scorer = FakeScorer()
+    bench.run_benchmark(_config(4), scorer, output_dir=tmp_path, concurrency=2)
+
+    assert scorer.scored == [abimee]  # seule la copie abîmée est recodée
+    recodee = [
+        json.loads(li)
+        for li in out.read_text(encoding="utf-8").splitlines()
+        if json.loads(li)["copy_id"] == abimee
+    ]
+    assert len(recodee) == 3  # les anciennes lignes ont été retirées, pas dupliquées
+    assert all(r["y_pred"] != CODE_NON_PARSE for r in recodee)

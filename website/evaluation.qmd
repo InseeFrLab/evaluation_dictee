@@ -1,43 +1,87 @@
 ---
-title: "Évaluation de la prédiction"
-subtitle: "Comment assurer la fiabilité de la prédiction ?"
+title: "Évaluation & métriques"
+subtitle: "Ce qu'on mesure, comment on le calcule, comment lire les intervalles"
 ---
+
+Cette page définit **toutes** les métriques employées dans le projet et la façon
+dont elles sont calculées. Les valeurs mesurées, elles, sont sur la page
+[Résultats](resultats.qmd), qui renvoie ici section par section.
 
 Évaluer, ici, ce n'est pas seulement « le modèle a-t-il raison ». C'est répondre à
 trois questions distinctes :
 
 1. **Le code prédit est-il fiable ?** (le modèle attribue-t-il les bons codes ?)
 2. **La lecture est-elle fidèle ?** (le modèle lit-il correctement l'écriture ?)
-3. **La indicateur de confiance est-il exploitable ?** (peut-on se fier au score de confiance
-   pour trier ce qu'on automatise et ce qu'on renvoie à un humain ?)
+3. **L'indicateur de confiance est-il exploitable ?** (peut-on se fier au score de
+   confiance pour trier ce qu'on automatise et ce qu'on renvoie à un humain ?)
 
-Pour chaque question, des métriques différentes seront utilisées.
+À chaque question correspond une famille de métriques, plus une question
+transversale, comment entourer ces chiffres d'un **intervalle de confiance**
+honnête, sachant que les 83 items d'une copie ne sont pas indépendants.
 
 ---
 
-## 1. Fiabilité du code prédit
+## 1. Fiabilité du code prédit {#codage}
 
 On compare, item par item, le code du modèle au code de l'**expert humain**, qui
 sert de **vérité de terrain**.
 
-### Accord brut
+### Notations et convention d'erreur {#convention-erreur}
 
-La proportion d'items où le modèle et l'expert donnent le **même** code.
+Pour un item donné, notons $y$ le code de l'expert et $\hat{y}$ celui du modèle.
+Les codes de la grille simplifiée sont `1` (mot correct), `9` (faute
+d'orthographe) et `0` (mot absent).
 
-$$\text{accord brut} = \frac{\text{nombre d'items identiques}}{\text{nombre total d'items}}$$
+Deux lectures des mêmes données coexistent, et les confondre est la principale
+source de malentendu :
 
-Métrique simple à comprendre, mais **peu fiable** lorsqu'une catégorie domine. Si 90 % des mots
-sont corrects, un modèle qui répond « correct » partout obtient 90 % d'accord sans
-rien comprendre.
+- la lecture **multi-classes** compare les codes tels quels : c'est celle de
+  l'accord brut, du kappa et de la matrice de confusion ;
+- la lecture **binaire** ne retient que « le mot est-il fauté ? », par la
+  convention **erreur $\Leftrightarrow$ code $\neq$ `1`** : c'est celle du
+  rappel, de la précision, de la sur-correction et de la sur-détection.
 
-### Kappa de Cohen
+La lecture binaire se résume à quatre effectifs :
+
+| | Modèle : erreur ($\hat{y} \neq 1$) | Modèle : correct ($\hat{y} = 1$) |
+|---|---|---|
+| **Expert : erreur** ($y \neq 1$) | $\text{VP}$ — faute détectée | $\text{FN}$ — **sur-correction** |
+| **Expert : correct** ($y = 1$) | $\text{FP}$ — **sur-détection** | $\text{VN}$ — accord sur un mot juste |
+
+: Les quatre cas de la lecture binaire {.striped}
+
+Les deux erreurs de la diagonale montante portent un nom dans le projet parce
+qu'elles n'ont pas le même coût : $\text{FN}$ laisse passer une faute,
+$\text{FP}$ sanctionne un élève à tort.
+
+### Accord brut {#accord-brut}
+
+La proportion d'items où le modèle et l'expert donnent le **même** code, sur
+l'ensemble des codes de la grille (lecture multi-classes) :
+
+$$\text{accord brut} = \frac{\text{nombre d'items où } \hat{y} = y}{\text{nombre total d'items}}$$
+
+Métrique simple à comprendre, mais **peu fiable** lorsqu'une catégorie domine. Si
+90 % des mots sont corrects, un modèle qui répond « correct » partout obtient
+90 % d'accord sans rien comprendre. *Plus haut = mieux.*
+
+### Kappa de Cohen {#kappa}
 
 Le **kappa** ($\kappa$) corrige l'accord brut de ce qu'on obtiendrait **par pur
-hasard**. C'est la métrique de référence du projet.
+hasard**, en tenant compte des fréquences marginales des codes. C'est la métrique
+de référence du projet.
 
 $$\kappa = \frac{p_o - p_e}{1 - p_e}$$
 
-où $p_o$ est l'accord observé et $p_e$ l'accord attendu par hasard.
+où $p_o$ est l'accord observé (l'accord brut ci-dessus) et $p_e$ l'accord attendu
+si le modèle et l'expert tiraient leurs codes au hasard en respectant chacun sa
+propre distribution :
+
+$$p_e = \sum_{c} p_{\cdot c} \, p_{c \cdot}$$
+
+$p_{\cdot c}$ et $p_{c \cdot}$ étant les fréquences du code $c$ chez le modèle et
+chez l'expert. Un $\kappa$ nul signifie « pas mieux que le hasard », 1 un accord
+parfait. *Plus haut = mieux.*
 
 | Valeur de κ | Interprétation courante |
 |:-----------:|-------------------------|
@@ -47,57 +91,124 @@ où $p_o$ est l'accord observé et $p_e$ l'accord attendu par hasard.
 | 0,60 – 0,80 | accord substantiel |
 | > 0,80 | accord presque parfait |
 
-::: {.callout-tip appearance="simple"}
-**Repère du projet.** Sur le test pilote, la grille simplifiée atteint κ ≈ 0,88 —
-un accord presque parfait. C'est le niveau à retrouver (ou dépasser) à grande échelle.
+Le kappa a une particularité qui a des conséquences sur son intervalle de
+confiance : ce n'est pas la moyenne d'une variable binaire, mais un **rapport**
+entre deux quantités elles-mêmes estimées. D'où le
+[bootstrap par grappes](#bootstrap-kappa).
+
+### Rappel des erreurs (sensibilité) {#rappel}
+
+Parmi les fautes que l'élève a réellement commises, la part que le modèle
+retrouve :
+
+$$\text{rappel} = \frac{\text{VP}}{\text{VP} + \text{FN}}$$
+
+*Plus haut = moins de fautes ratées.*
+
+### Précision sur les erreurs {#precision}
+
+Parmi les fautes que le modèle signale, la part qui en est vraiment :
+
+$$\text{précision} = \frac{\text{VP}}{\text{VP} + \text{FP}}$$
+
+*Plus haut = moins de fausses alertes.*
+
+### Taux de sur-correction {#sur-correction}
+
+La part des fautes de l'élève que le modèle **valide à tort** : il « corrige »
+silencieusement la copie, et la faute qu'on cherchait à détecter disparaît.
+
+$$\text{sur-correction} = \frac{\text{FN}}{\text{VP} + \text{FN}} = 1 - \text{rappel}$$
+
+*Plus bas = mieux.*
+
+::: {.callout-warning appearance="simple"}
+Ce taux est, par construction, le complément exact du rappel : les deux disent la
+même chose dans deux sens. Il est affiché parce qu'il nomme le risque
+opérationnel, pas parce qu'il apporte une information de plus.
+
+Attention également : la fonction `scoring_summary` du paquet calcule un
+`overcorrection_rate` rapporté à **tous** les items, et non aux seules erreurs de
+l'expert. Les deux définitions sont légitimes, mais elles ne donnent pas le même
+nombre — celle du site est celle indiquée ci-dessus.
 :::
 
-### Matrice de confusion
+### Taux de sur-détection {#sur-detection}
 
-Un tableau qui croise les codes de l'expert (lignes) et ceux du modèle (colonnes).
-La diagonale, ce sont les accords ; **hors diagonale**, ce sont les erreurs, et
-surtout **leur nature**. 
+La part des mots corrects que le modèle **sanctionne à tort** :
 
-Elle répond à des questions comme : « le modèle confond-il
-plutôt *correct* et *erreur*, ou *erreur* et *absent* ? ».
+$$\text{sur-détection} = \frac{\text{FP}}{\text{FP} + \text{VN}}$$
 
-### F1 pondéré
+*Plus bas = mieux.* C'est le risque symétrique du précédent, et celui qui pèse le
+plus lourd sur l'acceptabilité d'un codage automatique.
 
-Une synthèse de la **précision** (quand le modèle dit « erreur », a-t-il raison ?)
-et du **rappel** (parmi les vraies erreurs, combien le modèle en attrape-t-il ?).
-Le « pondéré » tient compte du fait que les catégories sont déséquilibrées.
+### F1 pondéré {#f1}
+
+Une synthèse de la précision et du rappel, par leur moyenne harmonique :
+
+$$F_1 = 2 \times \frac{\text{précision} \times \text{rappel}}{\text{précision} + \text{rappel}}$$
+
+Le « pondéré » calcule ce $F_1$ pour chaque code puis en fait la moyenne pondérée
+par l'effectif de chaque code, ce qui tient compte du déséquilibre des catégories.
 
 ::: {.callout-note appearance="simple"}
 **Les deux erreurs n'ont pas le même coût.** Rater une faute (mauvais **rappel**)
-et signaler une faute qui n'existe pas (mauvaise **précision**) n'ont pas les mêmes
-conséquences pour la DEPP. On regarde donc les deux séparément, pas seulement leur
-moyenne.
+et signaler une faute qui n'existe pas (mauvaise **précision**) n'ont pas les
+mêmes conséquences pour la DEPP. On regarde donc les deux séparément, et le $F_1$
+ne sert que de résumé : une moyenne masque exactement l'arbitrage qui intéresse
+le commanditaire.
 :::
+
+### Matrice de confusion {#matrice-de-confusion}
+
+Un tableau qui croise les codes de l'expert (lignes) et ceux du modèle
+(colonnes). La diagonale, ce sont les accords ; **hors diagonale**, les erreurs
+et surtout **leur nature**. Elle répond à des questions comme : « le modèle
+confond-il plutôt *correct* et *erreur*, ou *erreur* et *absent* ? ».
+
+La version détaillée, une ligne par transition
+`code expert → code modèle`, est la
+[décomposition des désaccords](resultats.qmd#decomposition-des-desaccords) de la
+page Résultats.
 
 ---
 
-## 2. Fidélité de la lecture (HTR)
+## 2. Fidélité de la lecture (HTR) {#htr}
 
 Ici on compare la **transcription** produite par le modèle à une transcription de
 **référence humaine**. Les deux préservent les fautes de l'élève : on mesure la
 **lecture**, pas l'orthographe.
 
-### CER — taux d'erreur au niveau caractère
+### CER — taux d'erreur au niveau caractère {#cer}
 
 *Character Error Rate.* Le nombre minimal de corrections (insérer, supprimer,
-remplacer un caractère) pour transformer la transcription du modèle en la référence,
-divisé par la longueur de la référence.
+remplacer un caractère) pour transformer la transcription du modèle en la
+référence — la **distance de Levenshtein** — divisé par la longueur de la
+référence :
 
-$$\text{CER} = \frac{\text{insertions} + \text{suppressions} + \text{substitutions (caractères)}}{\text{nombre de caractères de la référence}}$$
+$$\text{CER} = \frac{i + s + d}{N_{\text{car}}}$$
 
-**0 = transcription parfaite.** 0,10 signifie « environ un caractère sur dix à corriger ».
+où $i$, $s$ et $d$ sont les nombres d'insertions, substitutions et suppressions
+de caractères, et $N_{\text{car}}$ le nombre de caractères de la référence.
 
-### WER — taux d'erreur au niveau mot
+**0 = transcription parfaite.** 0,10 signifie « environ un caractère sur dix à
+corriger ». La métrique peut dépasser 1 si le modèle produit beaucoup plus de
+texte que la référence.
 
-*Word Error Rate.* La même idée, mais en comptant les **mots** entiers. Plus sévère
-que le CER : un seul caractère faux rend tout le mot faux.
+### WER — taux d'erreur au niveau mot {#wer}
 
-### Variantes normalisées
+*Word Error Rate.* La même distance d'édition, comptée en **mots** entiers :
+
+$$\text{WER} = \frac{i_{\text{mots}} + s_{\text{mots}} + d_{\text{mots}}}{N_{\text{mots}}}$$
+
+Plus sévère que le CER : un seul caractère faux rend tout le mot faux.
+
+Les deux taux sont agrégés en **micro-moyenne** sur le corpus, c'est-à-dire
+pondérés par la longueur de chaque référence — une copie longue pèse plus qu'une
+copie courte. C'est le taux d'erreur du corpus vu comme un seul long texte, et
+non la moyenne des taux par copie.
+
+### Variantes normalisées {#normalisees}
 
 On calcule aussi CER et WER après **normalisation** (minuscules, sans accents ni
 ponctuation). Comparer la version brute et la version normalisée permet de
@@ -105,7 +216,7 @@ ponctuation). Comparer la version brute et la version normalisée permet de
 d'accent — particulièrement utile ici, car la binarisation des scans rend les
 accents difficiles à lire.
 
-### Taux de sur-correction
+### Sur-correction de lecture {#sur-correction-lecture}
 
 ::: {.callout-important appearance="simple"}
 **La métrique critique pour l'écriture d'enfants.** La sur-correction, c'est quand
@@ -115,58 +226,328 @@ on perd précisément la faute qu'on voulait détecter. Un bon transcripteur doi
 reproduire les fautes, pas les gommer.
 :::
 
+À ne pas confondre avec la [sur-correction du codage](#sur-correction) : la
+première porte sur le texte transcrit, la seconde sur le code attribué. Les deux
+mesurent le même biais à deux étapes différentes du pipeline.
+
 ---
 
-## 3. Fiabilité de la confiance
+## 3. Fiabilité de la confiance et calibration {#calibration}
 
 Chaque code prédit s'accompagne d'un **score de confiance**. L'objectif final du
 projet est d'**automatiser les items sûrs** et de **renvoyer les items douteux** à
 un correcteur humain. Pour cela, encore faut-il que la confiance soit *fiable*.
 
-### Diagramme de fiabilité
+### Qu'est-ce qu'un score calibré ? {#definition-calibration}
 
-On regroupe les items par tranche de confiance (0–10 %, 10–20 %, …) et, dans chaque
-tranche, on compare la **confiance annoncée** à l'**accord réellement observé**.
+Un score de confiance est **calibré** si sa valeur se lit comme une probabilité
+d'avoir raison : parmi tous les items annoncés à 80 % de confiance, environ 80 %
+doivent effectivement être justes.
 
-Un modèle **bien calibré** est sur la diagonale : quand il annonce 80 % de
-confiance, il a effectivement raison ~80 % du temps. S'il est au-dessus de sa
-performance réelle, il est **trop sûr de lui** (dangereux : on automatiserait des
-erreurs).
+$$\mathbb{P}\left(\hat{y} = y \;\middle|\; \text{confiance} = c\right) = c \quad \text{pour tout } c$$
 
-### ECE — erreur de calibration attendue
+Deux propriétés distinctes, souvent confondues, et qui ne servent pas au même
+usage :
 
-*Expected Calibration Error.* Un unique chiffre qui résume le diagramme : l'écart
-moyen (pondéré par le nombre d'items) entre confiance annoncée et accord observé.
+- la **calibration** — le niveau du score est juste. C'est elle qui permet de
+  traduire un seuil en promesse chiffrée : « au-dessus de 0,9, je garantis moins
+  de 10 % d'erreur » ;
+- la **discrimination** (ou pouvoir de tri) — le score **classe** correctement les
+  items, les faux ayant des scores plus bas que les justes, même si le niveau est
+  décalé. C'est elle, et elle seule, qui rend une
+  [courbe de renvoi](#courbe-de-renvoi) utile.
+
+Un score mal calibré mais bien discriminant reste exploitable : il suffit de le
+**recalibrer**. Un score bien calibré en moyenne mais sans pouvoir de tri est
+inutilisable pour décider item par item.
+
+### Diagramme de fiabilité {#diagramme-de-fiabilite}
+
+C'est la vérification graphique de la calibration. On découpe l'intervalle
+$[0, 1]$ en $B = 10$ tranches de largeur égale, on y range les items selon leur
+confiance annoncée, et dans chaque tranche $b$ on compare deux quantités :
+
+- la **confiance moyenne annoncée** $\overline{c}_b$ ;
+- l'**accord réellement observé** $\text{acc}_b$, la part d'items justes de la
+  tranche.
+
+Un modèle bien calibré est sur la diagonale. Au-dessus de sa performance réelle,
+il est **trop sûr de lui** (dangereux : on automatiserait des erreurs) ; en
+dessous, il est trop modeste (on renverrait à l'humain des items qu'il traitait
+bien).
+
+### ECE — erreur de calibration attendue {#ece}
+
+*Expected Calibration Error.* Le résumé du diagramme en un seul chiffre : l'écart
+absolu moyen entre confiance annoncée et accord observé, pondéré par l'effectif
+de chaque tranche.
+
+$$\text{ECE} = \sum_{b=1}^{B} \frac{n_b}{N} \left| \text{acc}_b - \overline{c}_b \right|$$
+
+où $n_b$ est l'effectif de la tranche $b$ et $N$ le nombre total d'items munis
+d'une confiance (ceux qui n'en ont pas sont exclus du calcul).
 
 - **0 = parfaitement calibré.**
 - **> ~0,10** : le score de confiance n'est pas fiable tel quel et doit être
   **recalibré** avant de servir de seuil de décision.
 
-### Courbe de renvoi humain — le livrable décisionnel
+::: {.callout-warning appearance="simple"}
+**L'ECE ne détecte pas tout.** C'est une moyenne d'écarts absolus : elle ne dit
+rien du pouvoir de tri. Un modèle qui annonce **la même** confiance partout —
+disons 1,0 — obtient un ECE égal à son taux d'erreur, sans qu'aucune information
+n'ait été mesurée : le score est constant, donc inutile pour trier, et pourtant
+l'ECE paraît « seulement » médiocre. C'est exactement ce qui se produit sur nos
+runs (voir la [page Résultats](resultats.qmd#synthese-codage-de-la-dictee)), et
+c'est la raison pour laquelle le projet construit un autre signal de confiance.
+:::
 
-C'est **la** sortie qui guide la décision opérationnelle. Pour chaque **seuil** de
-confiance, on mesure deux quantités :
+### Recalibrer un score {#recalibration}
 
-- le **taux de renvoi humain** : la part d'items renvoyés à un correcteur (ceux dont
-  la confiance est sous le seuil) ;
-- le **taux d'erreur résiduel** : le taux d'erreur qui subsiste sur les items que
-  le modèle a **auto-validés** (au-dessus du seuil).
+Quand la discrimination est là mais le niveau faux, deux méthodes usuelles :
+
+- le **passage à l'échelle par température** (*temperature scaling*) : on divise
+  les logits du modèle par un scalaire $T$ ajusté sur un échantillon de
+  validation. Une seule constante à estimer, l'ordre des items est préservé
+  intégralement ;
+- la **régression isotonique** : on ajuste une fonction monotone quelconque du
+  score annoncé vers la probabilité observée. Plus souple, donc plus gourmande en
+  données de validation.
+
+Dans les deux cas, la recalibration s'ajuste sur des données **distinctes** de
+celles où l'on mesure ensuite l'ECE, sinon la calibration mesurée est optimiste.
+Aucune des deux ne peut rattraper un score constant : il n'y a rien à réordonner.
+
+### Confiance par consensus inter-modèles {#consensus}
+
+Le signal de confiance retenu par le projet ne vient pas du modèle lui-même mais
+du **désaccord entre plusieurs runs**. Pour chaque item, on compare les codes
+prédits par tous les runs disponibles ; le **code majoritaire** l'emporte et l'on
+retient le nombre de runs qui s'accordent. Au niveau de la copie :
+
+$$\text{score de confiance} = \frac{\text{nombre d'items où tous les runs s'accordent}}{\text{nombre d'items de la copie}}$$
+
+L'intuition est qu'un item sur lequel des architectures et des modèles
+différents convergent est probablement bien codé, alors qu'un item qui les divise
+est un candidat naturel à la relecture humaine. Contrairement à la confiance
+auto-déclarée, ce score varie réellement d'un item à l'autre — il **discrimine**,
+donc il est utilisable comme critère de tri.
+
+### Courbe de renvoi humain — le livrable décisionnel {#courbe-de-renvoi}
+
+C'est **la** sortie qui guide la décision opérationnelle. On trie les copies par
+score de confiance et, pour chaque **seuil** $\tau$, on mesure :
+
+$$\text{taux de renvoi}(\tau) = \frac{\text{nombre de copies dont le score} < \tau}{\text{nombre total de copies}}$$
+
+$$\text{accord retenu}(\tau) = \text{accord modèle-expert sur les items des copies conservées}$$
+
+Le **taux d'erreur résiduel** est le complément de l'accord retenu : le taux
+d'erreur qui subsiste sur ce qu'on a auto-validé.
 
 ```{mermaid}
 flowchart LR
-    A["Tous les items codés<br/>+ confiance"] --> B{"confiance ≥ seuil ?"}
+    A["Toutes les copies codées<br/>+ score de confiance"] --> B{"score ≥ τ ?"}
     B -->|oui| C["Auto-validé<br/>(on mesure l'erreur résiduelle)"]
     B -->|non| D["Renvoyé à un humain"]
 ```
 
-Faire varier le seuil dessine un compromis : **plus on renvoie à l'humain, plus
+Faire varier $\tau$ dessine un compromis : **plus on renvoie à l'humain, plus
 l'erreur résiduelle baisse**. La DEPP peut ainsi choisir un point de
 fonctionnement, par exemple : « je tolère 2 % d'erreur résiduelle — combien de
 copies dois-je alors relire à la main ? »
 
 ---
 
-## 4. Toujours comparer à l'humain
+## 4. Intervalles de confiance et structure en grappes {#intervalles}
+
+Toutes les métriques ci-dessus sont des estimations, donc assorties d'un
+intervalle de confiance à 95 %. Le calculer naïvement donnerait ici des
+intervalles **faux**, et cette section explique pourquoi.
+
+### Le problème {#probleme-grappes}
+
+Un intervalle de confiance se resserre à mesure qu'on accumule des observations
+**indépendantes**. Or les 83 items d'une même copie ne le sont pas : si un élève
+se trompe sur un mot, il a de bonnes chances de se tromper sur le suivant. Son
+niveau est commun à ses 83 items.
+
+Conséquence : les ≈ 290 000 items du corpus ne portent pas l'information de
+290 000 observations indépendantes. Traiter chaque item comme indépendant
+produirait des intervalles trop étroits : on annoncerait une précision qu'on n'a
+pas.
+
+C'est ce qu'on appelle une **structure en grappes** (*clustering*) : les
+observations arrivent par paquets — ici la copie — au sein desquels elles se
+ressemblent.
+
+### Intervalle de Wilson {#wilson}
+
+Pour une proportion $\hat{p}$ observée sur $n$ observations, le projet utilise
+l'intervalle de **Wilson** plutôt que l'approximation normale usuelle
+$\hat{p} \pm z\sqrt{\hat{p}(1-\hat{p})/n}$, qui se comporte mal quand $\hat{p}$
+approche 0 ou 1 — le cas de plusieurs de nos taux :
+
+$$\text{IC}_{95\%} = \frac{\hat{p} + \dfrac{z^2}{2n}}{1 + \dfrac{z^2}{n}} \; \pm \; \frac{z}{1 + \dfrac{z^2}{n}} \sqrt{\dfrac{\hat{p}(1-\hat{p})}{n} + \dfrac{z^2}{4n^2}}$$
+
+avec $z = 1{,}96$. L'intervalle reste toujours dans $[0, 1]$, et la valeur
+ponctuelle affichée demeure $\hat{p}$ — seul l'intervalle est corrigé.
+
+### Design effect de Kish {#design-effect}
+
+Le **design effect** chiffre la perte d'information due au regroupement :
+
+$$\text{deff} = 1 + (m - 1) \times \text{ICC}$$
+
+où $m$ est le nombre d'observations par copie et l'**ICC** (*intra-class
+correlation*) mesure à quel point les items d'une même copie se ressemblent.
+
+L'ICC se lit sur une décomposition de la variance de l'indicatrice en deux parts :
+
+- la variance **entre copies** est celle des moyennes par copie. Pour
+  l'indicatrice d'erreur, c'est l'écart de niveau entre élèves : une copie à 40
+  fautes et une copie à 3 fautes. Elle est d'autant plus grande que les copies
+  diffèrent les unes des autres ;
+- la variance **à l'intérieur d'une copie** est celle qui reste une fois le
+  niveau de l'élève retiré : sur une même copie, certains items sont ratés et
+  d'autres réussis.
+
+$$\text{ICC} = \frac{\text{variance entre copies}}{\text{variance entre copies} + \text{variance à l'intérieur d'une copie}}$$
+
+Un ICC nul signifie que les copies se valent toutes et que connaître un item
+n'apprend rien sur les autres items de la même copie : ils sont de fait
+indépendants. Un ICC de 1 signifie que tous les items d'une copie disent la même
+chose, donc qu'une copie entière ne vaut qu'une seule observation.
+
+On divise alors l'effectif par le design effect pour obtenir l'**effectif
+équivalent** :
+
+$$n_{\text{eq}} = \frac{n}{\text{deff}}$$
+
+c'est-à-dire le nombre d'observations indépendantes qui porteraient la même
+information. C'est ce $n_{\text{eq}}$ qui remplace $n$ dans la formule de Wilson
+ci-dessus, ce qui élargit l'intervalle d'un facteur $\sqrt{\text{deff}}$.
+
+### Un design effect par métrique, pas un pour tout le corpus {#deff-par-metrique}
+
+Le design effect appartient à une **indicatrice** précise, pas à un jeu de
+données, parce que les deux termes de la formule changent d'une métrique à
+l'autre :
+
+- ***m* change** : toutes les métriques ne sont pas calculées sur les 83 items de
+  la copie. Le rappel ne porte que sur les items que l'expert a codés en erreur,
+  soit une vingtaine par copie ;
+- **l'ICC change** : l'erreur se regroupe beaucoup plus par copie que l'accord.
+  Un élève faible se trompe partout, alors qu'un modèle peut être d'accord avec
+  l'expert sur une copie faible comme sur une copie forte.
+
+```{python}
+#| echo: false
+#| warning: false
+# Illustration mesurée sur les données réelles : un seul run suffit, on ne charge
+# donc pas les quatre du tableau de résultats (≈ 290 000 lignes chacun).
+import sys
+
+sys.path.insert(0, ".")
+
+import _analyse as A
+
+RUNS_DEFF = A.charger_runs(modeles=[A.MODELE_REFERENCE]) if A.PAQUET_OK else {}
+REF_DEFF = (
+    A.RUN_REFERENCE
+    if A.RUN_REFERENCE in RUNS_DEFF
+    else (next(iter(RUNS_DEFF)) if RUNS_DEFF else "")
+)
+```
+
+```{python}
+#| echo: false
+#| output: asis
+# Valeurs recalculées à chaque rendu : elles dépendent du run, et un tableau figé
+# se périmerait au premier nouveau modèle. L'ICC se déduit du deff par
+# ICC = (deff - 1) / (m - 1), inversion exacte de la formule de Kish.
+if REF_DEFF:
+    d = RUNS_DEFF[REF_DEFF].df
+    grappes = d["copy_id"]
+    err_exp, err_mod = d["y_true"] != "1", d["y_pred"] != "1"
+    cas = [
+        ("Accord", d["y_true"] == d["y_pred"], grappes, "tous les items"),
+        ("Erreur détectée", err_mod, grappes, "tous les items"),
+        ("Rappel", err_mod[err_exp], grappes[err_exp], "items en erreur chez l'expert"),
+    ]
+    lignes_deff = []
+    for nom, ind, gr, champ in cas:
+        m = ind.groupby(gr).size().mean()
+        deff_cas = A.design_effect(ind, gr)
+        lignes_deff.append(
+            [
+                f"{nom} <small>({champ})</small>",
+                f"{m:.0f}",
+                f"{(deff_cas - 1) / (m - 1):.3f}",
+                f"{deff_cas:.1f}",
+                f"{A.milliers(len(ind))} → {A.milliers(round(len(ind) / deff_cas))}",
+            ]
+        )
+    print(
+        A.table_markdown(
+            ["Indicatrice", "*m*", "ICC", "deff", "Effectif → équivalent"],
+            lignes_deff,
+            f"Trois indicatrices, trois design effects — run **{REF_DEFF}**",
+        )
+    )
+else:
+    print('::: {.callout-note appearance="simple"}')
+    print("Illustration chiffrée indisponible : aucun run de prédictions n'a pu être")
+    print("chargé (voir la [page Résultats](resultats.qmd) pour le détail).")
+    print(":::")
+```
+
+Le rappel illustre bien que les deux termes jouent en sens contraire : son ICC est
+le plus élevé des trois, mais comme il ne dispose que d'une vingtaine
+d'observations par copie au lieu de 83, son design effect est le plus faible.
+
+Il n'existe donc pas un design effect « du corpus ». Chaque métrique est corrigée
+par **le sien**, et le facteur varie aussi d'un run à l'autre : sur l'accord brut,
+il va de 5 à 12 selon l'approche et le modèle.
+
+### Le cas du kappa : bootstrap par grappes {#bootstrap-kappa}
+
+Le [kappa](#kappa) n'est pas la moyenne d'une indicatrice binaire mais un
+**rapport** entre deux quantités elles-mêmes estimées : il n'existe aucune
+indicatrice dont on pourrait calculer l'ICC pour alimenter la formule de Kish.
+Emprunter le design effect de l'accord, qui est la proportion la plus proche,
+élargit son intervalle d'environ 50 % de trop.
+
+Son intervalle vient donc d'un **bootstrap par grappes**, qui contourne le
+problème au lieu de le modéliser :
+
+1. on tire au hasard autant de copies que le corpus en compte, **avec remise** —
+   une copie peut sortir deux fois, une autre pas du tout ;
+2. on recalcule le kappa sur l'échantillon ainsi obtenu ;
+3. on répète 1 000 fois, et l'intervalle est donné par les centiles 2,5 et 97,5
+   de la distribution des kappas obtenus.
+
+Tirer des **copies entières** conserve intact le lien entre les items d'un même
+élève, sans avoir à le résumer par un ICC : la dispersion observée d'un tirage à
+l'autre intègre déjà la structure en grappes. C'est précisément ce que le design
+effect cherche à approcher par une formule.
+
+Le procédé est peu coûteux : la matrice de confusion de chaque copie est calculée
+une seule fois, un tirage se réduisant à sommer celles des copies tirées.
+
+### Où la correction ne s'applique pas {#sans-correction}
+
+À la [prévalence par item](resultats.qmd#prevalence-derreur-par-item) : chaque
+item n'y est observé qu'une fois par copie, donc une fois par élève. Ces
+observations sont indépendantes, leur design effect vaut 1, et l'intervalle de
+Wilson non corrigé est le bon.
+
+La règle générale : la correction s'applique aux métriques **agrégées sur les 83
+items d'une copie**, pas à celles calculées à raison d'**une observation par
+copie**.
+
+---
+
+## 5. Toujours comparer à l'humain {#reference-humaine}
 
 Une dernière exigence transversale : la performance de l'IA se lit **relativement à
 la variabilité entre correcteurs humains**. Deux experts qui codent la même copie ne
@@ -175,14 +556,35 @@ niveau d'accord *inter-humains* fait déjà « aussi bien qu'un humain ». On si
 systématiquement les métriques du modèle par rapport à ce plancher humain (estimé
 via des modèles d'accord inter-codeurs, type Dawid & Skene).
 
+Concrètement, un $\kappa$ de 0,60 ne se lit pas « 60 % du chemin vers la
+perfection » mais « les deux tiers du chemin vers l'accord que deux humains
+obtiennent entre eux ».
+
 ---
 
-## Récapitulatif
+## Récapitulatif {#recapitulatif}
 
-| Question | Métriques | Sens |
-|----------|-----------|------|
-| Le codage est-il fiable ? | Accord brut, **kappa**, matrice de confusion, F1 | plus haut = mieux |
-| La lecture est-elle fidèle ? | **CER**, **WER** (+ normalisés), **sur-correction** | plus bas = mieux |
-| La confiance est-elle exploitable ? | Diagramme de fiabilité, **ECE**, **courbe de renvoi** | ECE bas ; courbe = arbitrage |
+| Métrique | Ce qu'elle mesure | Sens | Correction d'IC |
+|---|---|:--:|---|
+| [Accord brut](#accord-brut) | part d'items codés à l'identique | plus haut | [design effect](#design-effect) |
+| [Kappa de Cohen](#kappa) | accord corrigé du hasard | plus haut | [bootstrap](#bootstrap-kappa) |
+| [Rappel des erreurs](#rappel) | fautes de l'élève retrouvées | plus haut | [design effect](#design-effect) |
+| [Précision sur les erreurs](#precision) | fautes signalées qui en sont | plus haut | [design effect](#design-effect) |
+| [Sur-correction](#sur-correction) | fautes validées à tort ($1 -$ rappel) | plus bas | [design effect](#design-effect) |
+| [Sur-détection](#sur-detection) | mots corrects sanctionnés à tort | plus bas | [design effect](#design-effect) |
+| [F1 pondéré](#f1) | résumé précision / rappel | plus haut | — |
+| [CER](#cer) / [WER](#wer) | fidélité de la transcription | plus bas | — |
+| [ECE](#ece) | écart confiance / justesse | plus bas | — |
+| [Score de consensus](#consensus) | part d'items où les runs s'accordent | plus haut | — |
+| [Courbe de renvoi](#courbe-de-renvoi) | charge humaine vs erreur résiduelle | arbitrage | [Wilson](#wilson) |
+| [Prévalence par item](#sans-correction) | difficulté de chaque item | comparaison | aucune (deff = 1) |
+
+: Toutes les métriques du projet, leur sens de lecture et le traitement de leur intervalle {.striped .hover}
+
+| Question | Métriques |
+|----------|-----------|
+| Le codage est-il fiable ? | accord brut, **kappa**, matrice de confusion, rappel, précision, sur-correction, sur-détection, F1 |
+| La lecture est-elle fidèle ? | **CER**, **WER** (+ normalisés), sur-correction de lecture |
+| La confiance est-elle exploitable ? | diagramme de fiabilité, **ECE**, score de consensus, **courbe de renvoi** |
 
 : Les trois familles de métriques {.striped .hover}

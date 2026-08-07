@@ -7,16 +7,18 @@ from __future__ import annotations
 
 import json
 import re
-from typing import cast
+from typing import Any, cast
 
-from openai import OpenAI
+# Client instrumenté Langfuse (comme VLMScorer) : sans lui, les appels des deux étapes
+# n'apparaissent pas comme « générations » sous la trace de la copie.
+from langfuse.openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from evaluation_dictee.config import ModelConfig, PromptConfig
 from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy, load_image
-from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
-from evaluation_dictee.models.vlm import _image_to_data_url
+from evaluation_dictee.models.base import CODE_NON_PARSE, CopyPrediction, ItemPrediction, Scorer
+from evaluation_dictee.models.vlm import _image_to_data_url, _items_json_schema
 from evaluation_dictee.pipeline.alignment import best_realignment, needs_realignment
 from evaluation_dictee.pipeline.prompts import (
     attach_image,
@@ -26,6 +28,41 @@ from evaluation_dictee.pipeline.prompts import (
 from evaluation_dictee.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Schéma de la réponse attendue à l'étape 1 (transcription seule).
+_TRANSCRIPTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"transcription": {"type": "string"}},
+    "required": ["transcription"],
+}
+
+
+def _request_kwargs(
+    model_config: ModelConfig, schema: dict[str, Any], schema_name: str
+) -> dict[str, Any]:
+    """Options d'appel communes aux deux étapes : décodage contraint et coupure du <think>.
+
+    Ces options étaient appliquées à l'end-to-end (`VLMScorer`) mais pas ici, d'où les
+    nombreux « JSON non extractible » à l'étape 2 : sans `response_format`, le modèle
+    produit du JSON libre (souvent tronqué ou précédé d'un bloc de raisonnement).
+
+    Args:
+        model_config: Configuration du modèle de l'étape concernée.
+        schema: Schéma JSON de la réponse attendue.
+        schema_name: Nom du schéma transmis à l'API.
+
+    Returns:
+        Les kwargs à passer à `chat.completions.create` (éventuellement vides).
+    """
+    kwargs: dict[str, Any] = {}
+    if model_config.structured_output:
+        kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": schema_name, "schema": schema},
+        }
+    if model_config.disable_thinking:
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+    return kwargs
 
 
 def _extract_items_from_content(content: str) -> list[dict]:
@@ -141,6 +178,9 @@ class TwoStageScorer(Scorer):
                 _image_to_data_url(image),
             ),
         )
+        request_kwargs = _request_kwargs(
+            self.model_config, _TRANSCRIPTION_SCHEMA, "transcription_dictee"
+        )
         for attempt in range(self.model_config.max_retries + 1):
             temp = self.model_config.temperature + (0.3 if attempt > 0 else 0.0)
             response = self.client.chat.completions.create(
@@ -148,6 +188,7 @@ class TwoStageScorer(Scorer):
                 temperature=temp,
                 max_tokens=self.model_config.max_tokens,
                 messages=messages,
+                **request_kwargs,
             )
             content = response.choices[0].message.content or "{}"
             transcription = self._parse_transcription(content)
@@ -198,6 +239,11 @@ class TwoStageScorer(Scorer):
                 scheme=self.scheme,
             ),
         )
+        # chain_of_thought=False : le prompt de l'étape 2 ne demande pas de champ
+        # `comparaison`, inutile de le rendre obligatoire dans le schéma.
+        request_kwargs = _request_kwargs(
+            self.model_config_stage2, _items_json_schema(chain_of_thought=False), "codage_dictee"
+        )
         for attempt in range(self.model_config_stage2.max_retries + 1):
             temp = self.model_config_stage2.temperature + (0.3 if attempt > 0 else 0.0)
             response = self.client.chat.completions.create(
@@ -205,6 +251,7 @@ class TwoStageScorer(Scorer):
                 temperature=temp,
                 max_tokens=self.model_config_stage2.max_tokens,
                 messages=messages,
+                **request_kwargs,
             )
             content = response.choices[0].message.content or ""
             if _extract_items_from_content(content):
@@ -239,7 +286,7 @@ class TwoStageScorer(Scorer):
                 content[:200],
             )
 
-        codes_seq = [str(it.get("code", "?")).strip() for it in raw_items]
+        codes_seq = [str(it.get("code", CODE_NON_PARSE)).strip() for it in raw_items]
         trans_seq = [it.get("transcription") for it in raw_items]
         conf_seq = [it.get("confidence") for it in raw_items]
 
@@ -265,12 +312,12 @@ class TwoStageScorer(Scorer):
         for item_id in copy.item_ids:
             entry = by_id.get(item_id)
             if entry is None:
-                items.append(ItemPrediction(item_id=item_id, code="?", confidence=0.0))
+                items.append(ItemPrediction(item_id=item_id, code=CODE_NON_PARSE, confidence=0.0))
             else:
                 items.append(
                     ItemPrediction(
                         item_id=item_id,
-                        code=str(entry.get("code", "?")).strip(),
+                        code=str(entry.get("code", CODE_NON_PARSE)).strip(),
                         confidence=entry.get("confidence"),
                         transcription=entry.get("transcription"),
                         comparaison=entry.get("comparaison"),
@@ -295,7 +342,8 @@ class TwoStageScorer(Scorer):
 
         if not transcription.strip():
             items_vides = [
-                ItemPrediction(item_id=i, code="?", confidence=0.0) for i in copy.item_ids
+                ItemPrediction(item_id=i, code=CODE_NON_PARSE, confidence=0.0)
+                for i in copy.item_ids
             ]
             return CopyPrediction(
                 copy_id=copy.copy_id,

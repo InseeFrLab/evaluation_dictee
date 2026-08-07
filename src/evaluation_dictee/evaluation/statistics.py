@@ -54,7 +54,7 @@ def wilson_interval(
         n: nombre total d'observations.
         level: niveau de confiance (0.90, 0.95 ou 0.99 ; sinon 0.95 par défaut).
         deff: design effect (voir `design_effect`). L'intervalle est alors calculé
-            sur l'effectif effectif `n / deff`, ce qui l'élargit d'un facteur
+            sur l'effectif équivalent `n / deff`, ce qui l'élargit d'un facteur
             √deff. Laisser à 1.0 quand les observations sont indépendantes.
 
     Returns:
@@ -71,7 +71,7 @@ def wilson_interval(
         raise ValueError("deff doit être >= 1 (1.0 = observations indépendantes).")
     z = _Z.get(level, 1.96)
     p = successes / n
-    n_eff = n / deff  # effectif effectif : ce que les données pèsent réellement
+    n_eff = n / deff  # effectif équivalent : ce que les données pèsent réellement
     denom = 1 + z**2 / n_eff
     centre = (p + z**2 / (2 * n_eff)) / denom
     half = (z / denom) * math.sqrt(p * (1 - p) / n_eff + z**2 / (4 * n_eff**2))
@@ -231,13 +231,15 @@ def design_effect(indicator: pd.Series | np.ndarray, clusters: pd.Series | np.nd
     partout) : la moyenne d'une indicatrice sur N items porte donc moins
     d'information que N observations indépendantes. Le design effect chiffre cette
     perte — `deff = 1 + (m - 1) x ICC`, où m est la taille moyenne de grappe et
-    l'ICC la part de variance qui vient des différences *entre* copies. Diviser N
-    par ce facteur donne l'effectif effectif, ce qui élargit l'IC de √deff.
+    l'ICC le rapport de la variance *entre* copies à la variance totale. Diviser N
+    par ce facteur donne l'effectif équivalent (le nombre d'observations
+    indépendantes portant la même information), ce qui élargit l'IC de √deff.
 
     **Le design effect appartient à une indicatrice, pas à un jeu de données** : sur
-    ce corpus, celle de l'erreur donne ≈ 10, celle de l'accord ≈ 7,5, celle du
-    rappel ≈ 4. Passer l'indicatrice concernée est donc obligatoire, sous peine de
-    corriger avec le mauvais facteur. Corollaire : une statistique calculée à raison
+    ce corpus, celle de l'erreur donne 10 à 16 selon le run, celle de l'accord 5 à
+    12, celle du rappel 3 à 5. Passer l'indicatrice concernée est donc obligatoire,
+    sous peine de corriger avec le mauvais facteur. Corollaire : une statistique
+    calculée à raison
     d'**une observation par grappe** (la prévalence d'un item, mesurée une fois par
     copie) n'a aucune corrélation intra-grappe à corriger — son deff vaut 1 et cette
     fonction n'a pas lieu d'être appelée.

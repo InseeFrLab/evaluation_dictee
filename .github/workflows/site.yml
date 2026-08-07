@@ -1,0 +1,150 @@
+name: Site
+
+# Construit le site Quarto (`website/`) et le publie sur GitHub Pages.
+#
+# Les pages « Résultats » et « Écarts » RE-EXÉCUTENT leur code Python au rendu :
+# elles relisent les prédictions exportées sur le S3 du SSP Cloud (le cache
+# `website/_freeze/` n'est volontairement pas versionné, cf. `.gitignore`).
+# Le runner a donc besoin des identifiants MinIO, fournis en secrets du dépôt :
+#
+#   AWS_ACCESS_KEY_ID       ┐ jetons MinIO du SSP Cloud
+#   AWS_SECRET_ACCESS_KEY   │ (page « Mon compte » → « Connexion au stockage »)
+#   AWS_SESSION_TOKEN       ┘ ⚠ ils EXPIRENT (7 jours max) : à renouveler.
+#
+# Optionnels, avec valeurs par défaut ci-dessous :
+#   AWS_S3_ENDPOINT (variable), S3_PREDICTIONS_PREFIX (secret ou variable)
+#
+# Sans identifiants valides le site se construit quand même : les pages
+# concernées affichent « — » et une note d'incident. Le déploiement n'échoue pas.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "src/**"
+      - "configs/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/site.yml"
+  workflow_dispatch: # publication manuelle (ex. après renouvellement des jetons)
+
+# Droits nécessaires au déploiement par artefact (pas de branche gh-pages).
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Une seule publication à la fois ; on ne coupe pas un déploiement en cours.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  construire:
+    runs-on: ubuntu-latest
+    # Environnement commun aux étapes de vérification et de rendu (GitHub
+    # Actions ne prend pas en charge les ancres YAML : on factorise ici).
+    env:
+      # ── Accès au S3 du SSP Cloud (MinIO) ────────────────────────────────
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # Vide avec un compte de service (pas de jeton de session) : botocore
+      # normalise alors la variable en `None`, c'est sans effet.
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-1
+      # `fsspec`/`s3fs` lisent l'endpoint dans l'environnement. `AWS_S3_ENDPOINT`
+      # seul ne suffit PAS : botocore l'ignore et route vers s3.amazonaws.com.
+      # C'est `AWS_ENDPOINT_URL` qui dirige vers MinIO (vérifié sur ce projet).
+      AWS_S3_ENDPOINT: ${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+      AWS_ENDPOINT_URL: https://${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+      FSSPEC_S3_ENDPOINT_URL: https://${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+      # ── Paramètres des pages de résultats (cf. website/_analyse.py) ─────
+      # Valeur explicite : une variable vide écraserait le défaut du module.
+      S3_PREDICTIONS_PREFIX: ${{ vars.S3_PREDICTIONS_PREFIX || 's3://projet-production-ecrits-depp/predictions' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bascule Pages en mode « GitHub Actions » (déploiement par artefact).
+      # Sans ça, si la source du dépôt est restée sur « Deploy from a branch »,
+      # le job de déploiement boucle sur `deployment_in_progress` puis échoue :
+      # il attend un build de branche qui n'arrive jamais.
+      - name: Configurer Pages
+        uses: actions/configure-pages@v5
+
+      - name: Installer Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: "1.10.18" # même version qu'en local, pour un rendu identique
+
+      - name: Installer uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Installer Python et dépendances
+        run: |
+          uv python install 3.11
+          # `--extra website` apporte matplotlib et le noyau Jupyter dont le
+          # rendu a besoin ; le paquet du projet fournit les calculs.
+          uv sync --extra website
+
+      # `_analyse.py` capture toute erreur S3 pour garder les pages rendables :
+      # un échec d'accès ne se voit alors que par des « — » sur le site publié.
+      # Cette étape fait remonter l'erreur. Non bloquante : mieux vaut republier
+      # un site incomplet que ne rien publier.
+      #
+      # Le résultat est écrit dans `$GITHUB_STEP_SUMMARY`, donc affiché sur la
+      # page de résumé du run : inutile d'aller déplier les logs du job.
+      - name: Vérifier l'accès au S3
+        continue-on-error: true
+        # Seules les LONGUEURS des secrets sont affichées, jamais leur valeur.
+        run: |
+          {
+            echo "clé      : ${#AWS_ACCESS_KEY_ID} caractères"
+            echo "secret   : ${#AWS_SECRET_ACCESS_KEY} caractères"
+            echo "jeton    : ${#AWS_SESSION_TOKEN} caractères"
+            echo "endpoint : ${AWS_ENDPOINT_URL}"
+            echo "préfixe  : ${S3_PREDICTIONS_PREFIX}"
+            uv run python -c "
+          import os, fsspec
+          prefixe = os.environ['S3_PREDICTIONS_PREFIX']
+          fs = fsspec.filesystem('s3')
+          print('endpoint résolu :', fs.s3.meta.endpoint_url)
+          for entree in fs.ls(prefixe, detail=False):
+              print('  ', entree)
+          " 2>&1
+          } > "${RUNNER_TEMP}/diagnostic-s3.txt" || true
+          cat "${RUNNER_TEMP}/diagnostic-s3.txt"
+          {
+            echo "## Diagnostic S3"
+            echo '```'
+            cat "${RUNNER_TEMP}/diagnostic-s3.txt"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Rendre le site
+        # Rendu depuis la RACINE du dépôt : `_analyse.py` remonte jusqu'au
+        # dossier contenant `src/evaluation_dictee` pour importer le paquet et
+        # résoudre `configs/grille_dictee_2015.json`.
+        run: uv run quarto render website
+
+      - name: Préparer l'artefact Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/_site
+
+  deployer:
+    needs: construire
+    runs-on: ubuntu-latest
+    # Un déploiement courant prend moins d'une minute, mais la toute première
+    # publication d'un site (provision CDN + certificat TLS) peut dépasser
+    # 8 minutes : on garde de la marge pour ne pas tuer un déploiement valide.
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deploiement.outputs.page_url }}
+    steps:
+      - name: Déployer sur GitHub Pages
+        id: deploiement
+        uses: actions/deploy-pages@v4

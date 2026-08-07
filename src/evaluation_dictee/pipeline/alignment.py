@@ -9,6 +9,8 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 
+from evaluation_dictee.models.base import CODE_NON_PARSE
+
 
 @dataclass
 class AlignedPrediction:
@@ -148,7 +150,9 @@ def realign(
         aligned[i - 1] = AlignedPrediction("0", None, 0.0, realigned=True)
         i -= 1
 
-    return [a if a is not None else AlignedPrediction("?", None, 0.0, True) for a in aligned]
+    return [
+        a if a is not None else AlignedPrediction(CODE_NON_PARSE, None, 0.0, True) for a in aligned
+    ]
 
 
 def _alignment_quality(expected_words: list[str], aligned: list[AlignedPrediction]) -> float:
@@ -223,7 +227,9 @@ def realign_anchored(
             else:
                 result[ie] = AlignedPrediction("0", None, 0.0, realigned=True)
 
-    return [a if a is not None else AlignedPrediction("?", None, 0.0, True) for a in result]
+    return [
+        a if a is not None else AlignedPrediction(CODE_NON_PARSE, None, 0.0, True) for a in result
+    ]
 
 
 def best_realignment(

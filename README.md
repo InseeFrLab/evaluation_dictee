@@ -4,16 +4,13 @@
 l'aide de modèles multimodaux open weight, et **comparer rigoureusement** le codage
 automatique à celui d'un correcteur expert. Collaboration **DEPP × SSP Lab (INSEE)**.
 
-> Contexte complet et décisions : voir **[CLAUDE.md](CLAUDE.md)** et les
-> **[décisions](docs/decisions.md)** dans [`docs/`](docs/).
-
 ---
 
 ## Ce que fait le projet, en bref
 
 1. **Charge** les imagettes de dictée (TIFF 1 bit, depuis S3) et les codes de
    l'annotateur expert (gold standard).
-2. **Demande à un modèle multimodal** (gemma4 sur llm.lab) de coder chaque mot de
+2. **Demande à un modèle multimodal** (gemma4 ou gwen3.6 sur llm.lab) de coder chaque mot de
    la dictée — correct / erreur / absent — directement à partir de l'image et du
    texte de référence, sans étape d'OCR séparée.
 3. **Compare** les codes du modèle à ceux de l'expert.
@@ -23,10 +20,9 @@ automatique à celui d'un correcteur expert. Collaboration **DEPP × SSP Lab (IN
 La tâche cible est la **grille simplifiée** : `1` correct / `9` erreur / `0` absent
 (voir [docs/decisions.md](docs/decisions.md), décision D2).
 
-### Deux approches d'évaluation comparables
+### ✅ Deux approches d'évaluation comparables
 
-Le projet implémente **deux architectures** derrière la même interface `Scorer`,
-donc évaluées par le même code de métriques (comparaison rigoureuse) :
+Le projet implémente **deux architectures** derrière la même interface `Scorer` :
 
 - **`end_to_end` (approche 2)** : un VLM lit l'image ET code en une seule passe.
   Approche par défaut. Config : `configs/scoring/dictee_REFERENCE.yaml`.
@@ -34,19 +30,19 @@ donc évaluées par le même code de métriques (comparaison rigoureuse) :
   texte brut, fautes comprises) ; étape 2 = codage du texte transcrit (sans image,
   éventuellement par un modèle texte plus léger via `model_stage2`). Isole lecture
   et jugement. Config : `configs/scoring/dictee_REFERENCE.yaml`. L'approche se choisit
-  via le champ `approach` du YAML.
+  via le champ `approach` du YAML ou par les paramètres `--model_name` et 
+  `--model_stage2-name`.
 
-### Évaluation dédiée de la transcription (HTR) sur Scoledit
+### 📄 Évaluation dédiée de la transcription (HTR) sur Scoledit
 
 Indépendamment du codage, on peut mesurer la **fidélité de lecture** d'un modèle sur
 l'écriture manuscrite d'enfants via le corpus **Scoledit** (transcriptions de
-référence humaines, fautes préservées). Métriques CER/WER (bruts et normalisés).
-Cela permet de comparer les modèles sur la seule lecture et de distinguer les
-erreurs de lecture de celles de jugement. Config : `configs/htr/htr_REFERENCE.yaml`,
-script : `scripts/run_htr_benchmark.py`, analyse :
-`notebooks/05_analyse_transcription_htr.ipynb`.
+référence humaines, fautes préservées). Cela permet de comparer les modèles sur la 
+seule lecture et de distinguer les erreurs de lecture de celles de jugement. 
+Config : `configs/htr/htr_REFERENCE.yaml`, script : `scripts/run_htr_benchmark.py`, 
+analyse : `notebooks/05_analyse_transcription_htr.ipynb`.
 
-### Fine-tuning HTR (phase ultérieure)
+### 🔨 Fine-tuning HTR (phase ultérieure)
 
 Pour améliorer la fidélité de lecture sur l'écriture d'enfants, on peut
 **spécialiser** un VLM par fine-tuning **QLoRA** (LoRA en 4 bits) sur le corpus
@@ -55,7 +51,7 @@ sortie est un adaptateur léger (~50-200 Mo) qui se charge par-dessus le modèle
 base. Nécessite un **GPU H100**. Suivi via **MLflow** (et non Langfuse). Config :
 `configs/finetune/finetune_REFERENCE.yaml`, script : `scripts/finetune_htr_scoledit.py`.
 
-### Documentation pédagogique (site Quarto)
+### 📖 Documentation pédagogique (site Quarto)
 
 Un **site Quarto** (dossier [`website/`](website/)) présente le projet pour un
 public statisticien novice en IA : architecture, résultats des deux approches,
@@ -65,10 +61,12 @@ explication détaillée des métriques d'évaluation, et fine-tuning.
 quarto preview website        # aperçu local avec rechargement à chaud
 quarto render website         # génère le site statique dans website/_site/
 ```
+> Contexte complet et décisions : voir **[CLAUDE.md](CLAUDE.md)** et les
+> **[décisions](docs/decisions.md)** dans [`docs/`](docs/).
 
 ---
 
-## Démarrage rapide (SSP Cloud / VSCode)
+## 🔧 Démarrage rapide (SSP Cloud / VSCode)
 
 ### 1. Installer
 
@@ -153,13 +151,19 @@ messages=[{'role':'user','content':'Dis bonjour'}], max_tokens=10).choices[0].me
 
 ### 3. Lancer un benchmark
 
-**Commande de base** (test rapide, terminal foreground) :
+#### **Pour lancer une évalutaion des copies** :
 ```bash
-uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
+uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml [--model-name gwen3-6-35b-moe] [--model-stage2-name qwen3-6-35b-moe]
 ```
 
-Cela produit `data/processed/dictee_REFERENCE_predictions.jsonl`
-(une ligne par item × copie) et journalise tout dans Langfuse : une **session**
+Cela produit `data/processed/dictee_REFERENCE_<modele>_predictions.jsonl` — le nom
+du fichier est **toujours** suffixé par le modèle de l'étape 1 (plus celui de
+l'étape 2 s'il diffère), que le modèle vienne du YAML ou de `--model-name`, pour
+que deux modèles n'écrasent jamais le même checkpoint. Chaque ligne porte en
+outre les champs `model` et `model_stage2`.
+
+Le fichier contient une ligne par item × copie, et tout est journalisé dans
+Langfuse : une **session**
 par run, une **trace** par copie (entrée/sortie + score d'accord), les appels LLM
 en générations imbriquées, et les métriques agrégées du run en Scores et metadata.
 
@@ -172,13 +176,13 @@ reprend automatiquement où il s'était arrêté : si un run est interrompu
 et il saute les copies déjà traitées. Voir « Runs longs » pour les détails.
 
 **Vitesse : évaluation en parallèle.** Les copies sont évaluées concurremment
-(le endpoint vLLM batche les requêtes) — réglé par `concurrency` dans le YAML
+(le endpoint vLLM batche les requêtes), réglé par `concurrency` dans le YAML
 (défaut **8**). C'est le principal levier de temps mural : passer de 1 à N copies
 en parallèle divise d'autant la durée tant que le serveur suit. Monter (16, 32…)
 si l'endpoint tient, redescendre en cas de timeouts / erreurs 429. Seul le scoring
 est parallélisé : l'écriture du JSONL et la reprise restent inchangées.
 
-**Pour l'évaluation de la transcription (HTR)** sur Scoledit :
+#### **Pour l'évaluation de la transcription (HTR)** sur Scoledit :
 
 ```bash
 uv run scripts/run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml
@@ -189,14 +193,16 @@ le CER/WER moyens. Analyse dans `notebooks/05_analyse_transcription_htr.ipynb`.
 La transcription est elle aussi **parallélisée** (champ `concurrency` du YAML HTR,
 défaut 8) ; l'ordre des échantillons en sortie est préservé.
 
-**Exporter les prédictions vers S3.** Le pipeline écrit en local (append + fsync
-par copie, pour la reprise sur crash). Une fois un run terminé, on pousse le JSONL
-vers le répertoire `predictions/` du bucket S3, afin de **relancer les notebooks et
-le site Quarto sans réexécuter le pipeline**. Rien n'est commité dans Git.
+#### **Exporter les prédictions vers S3.** 
+
+Le pipeline écrit en local (append + fsync par copie, pour la reprise sur crash). 
+Une fois un run terminé, on pousse le JSONL vers le répertoire `predictions/` du bucket 
+S3, afin de **relancer les notebooks et le site Quarto sans réexécuter le pipeline**. 
+Rien n'est commité dans Git.
 
 ```bash
 # scoring — end_to_end OU two_stage (même format, c'est le `name` qui distingue) :
-uv run scripts/export_predictions.py --config configs/scoring/dictee_REFERENCE.yaml
+uv run scripts/export_predictions.py --run-name dictee_two_stage_gemma4-26b-moe # type d'approche + nom du modèle
 
 # transcription HTR seule :
 uv run scripts/export_predictions.py --config configs/htr/htr_REFERENCE.yaml --htr
@@ -205,10 +211,10 @@ uv run scripts/export_predictions.py --config configs/htr/htr_REFERENCE.yaml --h
 eval-ecrit export configs/scoring/dictee_REFERENCE.yaml
 ```
 
-Destination : `$S3_PREDICTIONS_PREFIX/<name>_predictions.jsonl` (défaut
+Destination : `$S3_PREDICTIONS_PREFIX/<name>_<modele>_predictions.jsonl` (défaut
 `s3://projet-production-ecrits-depp/predictions`, surchargeable par `--dest-prefix`).
 
-**Pour le fine-tuning** d'un modèle de transcription (nécessite un GPU H100) :
+#### **Pour le fine-tuning** d'un modèle de transcription (nécessite un GPU H100) :
 ```bash
 uv run scripts/finetune_htr_scoledit.py --config configs/finetune/finetune_REFERENCE.yaml
 ```
@@ -254,9 +260,17 @@ checkpointing sauvera les prédictions déjà écrites, mais pas la copie en cou
 > du SSP Cloud (`sudo apt-get install tmux` échoue avec « No installation
 > candidate »). Utiliser `screen` (Option A) ou `nohup` (Option B).
 
-### Avant tout : créer le dossier logs
+### Avant tout : vérifier qu'aucun run ne tourne, et créer le dossier logs
+
+Deux runs sur le même fichier de sortie dupliquent les copies et faussent les
+métriques. Le verrou `<sortie>.lock` fait désormais échouer le second dès le
+démarrage, mais autant le constater avant de lancer — quelle que soit l'option
+choisie ci-dessous :
 
 ```bash
+ps -ef | grep run_benchmark | grep -v grep    # doit ne rien renvoyer
+screen -ls                                    # ni session détachée oubliée
+
 # À faire une seule fois (nohup échoue si le dossier n'existe pas) :
 mkdir -p logs
 ```
@@ -279,22 +293,49 @@ uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
 
 ### Option B — nohup (toujours disponible, sans interface interactive)
 
+Lancer — **un fichier de log distinct par run**, sinon les sorties de deux runs
+s'entrelacent dans le même fichier et deviennent illisibles après coup :
+
 ```bash
-mkdir -p logs    # créer le dossier si pas encore fait
+mkdir -p logs
 
-nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml \
-      > logs/dictee_REFERENCE.log 2>&1 &
-echo $! > logs/dictee_REFERENCE.pid    # noter le PID pour arrêter plus tard
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml \
+      > logs/dictee_end2end.log 2>&1 &
 
-# Suivre le log en direct :
-tail -f logs/dictee_REFERENCE.log
-
-# Vérifier que le process tourne :
-ps -p $(cat logs/dictee_REFERENCE.pid)
-
-# Arrêter proprement (le checkpointing sauvegardera l'état) :
-kill $(cat logs/dictee_REFERENCE.pid)
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml \
+      > logs/dictee_two_stage.log 2>&1 &
 ```
+
+Suivre et contrôler :
+
+```bash
+# Suivre le log en direct :
+tail -f logs/dictee_end2end.log
+
+# Vérifier que le run tourne (affiche le wrapper `uv run` ET le python) :
+ps -ef | grep run_benchmark | grep -v grep
+
+# Arrêter proprement (le checkpointing conserve tout sauf la copie en cours) :
+pkill -f "run_benchmark.py --config configs/scoring/dictee_end2end.yaml"
+```
+
+> **Ne pas piloter le run par un fichier `.pid`.** `nohup uv run … &` crée DEUX
+> process : le wrapper `uv run` et le vrai `python3 scripts/run_benchmark.py`.
+> `echo $!` ne capture que le wrapper ; un `kill` sur ce seul PID laisse
+> l'enfant Python vivant en orphelin, qui continue d'écrire. C'est ainsi que
+> plusieurs runs concurrents se sont retrouvés sur le même JSONL. `pkill -f`
+> sur le motif de la config cible les deux d'un coup.
+
+**Vérifier que la reprise a bien pris.** Les premières lignes du log doivent
+annoncer le nombre de copies déjà faites :
+
+```bash
+head -20 logs/dictee_end2end.log | grep -i "reprise\|copies au total"
+```
+
+Si un run annonce `0 déjà faites` alors qu'un checkpoint existe, l'arrêter : le
+nom du fichier de sortie ne correspond pas au checkpoint (modèle différent, ou
+`name` modifié dans le YAML), et le run repartirait de zéro.
 
 ### Surveillance de l'avancement
 
@@ -302,15 +343,22 @@ Pendant un run long, dans une **autre** fenêtre ou onglet, ces commandes donnen
 un signal de vie plus fiable que la barre de progression :
 
 ```bash
+# Retrouver le fichier du run en cours (le nom porte le modèle) :
+ls -lt data/processed/*_predictions.jsonl | head
+
 # Compter les copies déjà traitées dans le JSONL (une copie = ~83 lignes) :
-wc -l data/processed/dictee_REFERENCE_predictions.jsonl
+wc -l data/processed/dictee_REFERENCE_qwen3-6-35b-moe_predictions.jsonl
 
 # Suivre le compteur en direct (mise à jour toutes les 5 s) :
-watch -n 5 "wc -l data/processed/dictee_REFERENCE_predictions.jsonl"
+watch -n 5 "wc -l data/processed/dictee_REFERENCE_qwen3-6-35b-moe_predictions.jsonl"
 
 # Lister les copies en échec (à retenter au prochain lancement) :
-cat data/processed/dictee_REFERENCE_failed_copies.txt
+cat data/processed/dictee_REFERENCE_qwen3-6-35b-moe_failed_copies.txt
 ```
+
+> **Un seul run par fichier de sortie.** Un second run visant le même fichier
+> s'arrête aussitôt sur le verrou `<sortie>.lock`. Avant de relancer, vérifier
+> qu'aucun run ne tourne déjà : `ps -ef | grep run_benchmark`.
 
 ### Reprise après crash — mode d'emploi
 
@@ -318,12 +366,16 @@ Le benchmark écrit sur disque après CHAQUE copie évaluée (avec `flush + fsyn
 Conséquences pratiques :
 
 - **Crash ou déconnexion** : relance exactement la même commande. Les copies
-  déjà présentes dans `<run>_predictions.jsonl` sont automatiquement sautées,
-  et le run reprend à la copie suivante.
+  déjà présentes dans `<run>_<modele>_predictions.jsonl` sont automatiquement
+  sautées, et le run reprend à la copie suivante. Relancer avec une commande
+  *différente* (par ex. en ajoutant `--model-name` alors que le premier
+  lancement lisait le modèle du YAML) viserait, avant correction, un autre
+  fichier et repartirait de zéro : le nommage est désormais identique dans les
+  deux cas.
 - **Erreurs API sur des copies isolées** : elles sont loggées dans
-  `<run>_failed_copies.txt`, la copie fautive est sautée mais le run continue.
+  `<run>_<modele>_failed_copies.txt`, la copie fautive est sautée mais le run continue.
   Au prochain lancement, ces copies seront retentées.
-- **Repartir de zéro** : supprimer `<run>_predictions.jsonl` (ou changer
+- **Repartir de zéro** : supprimer `<run>_<modele>_predictions.jsonl` (ou changer
   `config.name` dans le YAML).
 
 ---
@@ -452,6 +504,7 @@ uv run scripts/run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml
 uv run scripts/finetune_htr_scoledit.py --config configs/finetune/finetune_REFERENCE.yaml
 
 # ─────────── Runs longs (session détachable) ───────────
+ps -ef | grep run_benchmark | grep -v grep       # AVANT tout : rien ne doit tourner
 mkdir -p logs                                    # toujours créer d'abord
 
 # Option A : screen (recommandé sur Onyxia, généralement disponible)
@@ -459,12 +512,22 @@ which screen && screen -S dictee                 # puis Ctrl+A D pour détacher
                                                  # screen -r dictee pour rattacher
 
 # Option B : nohup (toujours dispo, sans interface interactive)
-nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml \
-      > logs/dictee_REFERENCE.log 2>&1 &
+# Un log DISTINCT par run, sinon les sorties s'entrelacent.
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml \
+      > logs/dictee_end2end.log 2>&1 &
+nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml \
+      > logs/dictee_two_stage.log 2>&1 &
 
 # ─────────── Surveillance d'un run en cours ───────────
-tail -f logs/dictee_REFERENCE.log
-watch -n 5 "wc -l data/processed/dictee_REFERENCE_predictions.jsonl"
+tail -f logs/dictee_end2end.log
+head -20 logs/dictee_end2end.log | grep -i "reprise"   # la reprise a-t-elle pris ?
+ls -lt data/processed/*_predictions.jsonl | head       # retrouver le fichier du run
+watch -n 5 "wc -l data/processed/dictee_end2end_qwen3-6-35b-moe_predictions.jsonl"
+
+# ─────────── Arrêter un run ───────────
+# PAS `kill $(cat *.pid)` : `nohup uv run …` crée un wrapper + un python, et `$!`
+# ne capture que le wrapper — l'enfant survivrait et continuerait d'écrire.
+pkill -f "run_benchmark.py --config configs/scoring/dictee_end2end.yaml"
 
 # ─────────── Analyse des résultats ───────────
 uv sync --extra notebooks                          # une seule fois (JupyterLab + matplotlib)

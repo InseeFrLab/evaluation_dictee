@@ -9,7 +9,7 @@ import argparse
 
 from langfuse import get_client
 
-from evaluation_dictee.config import Secrets, load_config
+from evaluation_dictee.config import Secrets, load_config, override_model_names
 from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.evaluation.calibration import referral_curve
 from evaluation_dictee.models.factory import build_scorer
@@ -24,10 +24,37 @@ def main() -> None:
     """Lance le benchmark et affiche métriques et calibration."""
     parser = argparse.ArgumentParser(description="Lance un benchmark d'évaluation.")
     parser.add_argument("--config", required=True, help="Chemin du fichier YAML.")
+    parser.add_argument(
+        "--model-name",
+        default=None,
+        help=(
+            "Surcharge model.name (étape 1 / unique étape en end_to_end). "
+            "Doit correspondre exactement au nom servi sur llm.lab."
+        ),
+    )
+    parser.add_argument(
+        "--model-stage2-name",
+        default=None,
+        help=(
+            "Surcharge model_stage2.name (étape 2, codage textuel). "
+            "Uniquement valide en approche two_stage."
+        ),
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
+    config = override_model_names(config, args.model_name, args.model_stage2_name)
     secrets = Secrets()
+
+    if config.model_stage2 is not None:
+        logger.info(
+            "Run : %s | modèles : %s (étape 1), %s (étape 2)",
+            config.name,
+            config.model.name,
+            config.model_stage2.name,
+        )
+    else:
+        logger.info("Run : %s | modèle : %s", config.name, config.model.name)
 
     grid = load_grid(config.data.grid_path)
     scorer = build_scorer(

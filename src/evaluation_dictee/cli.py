@@ -6,17 +6,16 @@ Exemple : `eval-ecrit benchmark configs/scoring/dictee_REFERENCE.yaml`
 from __future__ import annotations
 
 import typer
-import yaml
 from langfuse import get_client
 from rich.console import Console
 from rich.table import Table
 
-from evaluation_dictee.config import Secrets, load_config
+from evaluation_dictee.config import Secrets, load_config, override_model_names
 from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.evaluation.metrics import ScoringMetrics
 from evaluation_dictee.models.factory import build_scorer
 from evaluation_dictee.pipeline.benchmark import run_benchmark
-from evaluation_dictee.utils.s3_export import export_run
+from evaluation_dictee.utils.s3_export import export_run, resolve_run_name
 from evaluation_dictee.utils.tracking import experiment_run, log_metrics
 
 app = typer.Typer(help="Évaluation automatique de la production d'écrit (DEPP × SSP Lab).")
@@ -24,7 +23,26 @@ console = Console()
 
 
 @app.command()
-def benchmark(config_path: str) -> None:
+def benchmark(
+    config_path: str,
+    model_name: str | None = typer.Option(
+        None,
+        "--model-name",
+        "-m",
+        help=(
+            "Surcharge model.name (étape 1 / unique étape en end_to_end). "
+            "Doit correspondre exactement au nom servi sur llm.lab."
+        ),
+    ),
+    model_stage2_name: str | None = typer.Option(
+        None,
+        "--model-stage2-name",
+        help=(
+            "Surcharge model_stage2.name (étape 2, codage textuel). "
+            "Uniquement valide en approche two_stage."
+        ),
+    ),
+) -> None:
     """Lance un benchmark à partir d'un fichier de configuration YAML.
 
     Charge la config et les secrets, construit le scorer, exécute le run (tracé
@@ -32,12 +50,21 @@ def benchmark(config_path: str) -> None:
 
     Args:
         config_path: Chemin du fichier YAML de configuration du run.
+        model_name: Surcharge du modèle d'étape 1 (voir `override_model_names`).
+        model_stage2_name: Surcharge du modèle d'étape 2 (two_stage uniquement).
     """
     config = load_config(config_path)
+    config = override_model_names(config, model_name, model_stage2_name)
     secrets = Secrets()
 
     console.print(f"[bold]Run :[/bold] {config.name}")
-    console.print(f"Modèle : {config.model.name} | Méthode : {config.prompt.method}")
+    if config.model_stage2 is not None:
+        console.print(
+            f"Modèle étape 1 : {config.model.name} | étape 2 : {config.model_stage2.name} | "
+            f"Méthode : {config.prompt.method}"
+        )
+    else:
+        console.print(f"Modèle : {config.model.name} | Méthode : {config.prompt.method}")
 
     scorer = build_scorer(
         config=config,
@@ -67,7 +94,7 @@ def benchmark(config_path: str) -> None:
 @app.command()
 def export(
     config_path: str | None = typer.Argument(
-        None, help="YAML du run (le nom est lu dans le champ `name`)."
+        None, help="YAML du run (le nom de fichier inclut le modèle)."
     ),
     run_name: str | None = typer.Option(
         None, "--run-name", help="Nom du run (alternative à config_path)."
@@ -87,7 +114,8 @@ def export(
     Fournir SOIT un YAML de run, SOIT `--run-name`.
 
     Args:
-        config_path: Chemin du YAML du run (le nom est lu dans `name`).
+        config_path: Chemin du YAML du run (le préfixe des fichiers est résolu
+            par `resolve_run_name`, modèle inclus).
         run_name: Nom du run, alternative au YAML.
         htr: Exporte `<name>_htr_predictions.jsonl` (transcription seule).
         source_dir: Dossier local des prédictions.
@@ -97,8 +125,9 @@ def export(
         raise typer.BadParameter("Fournir un YAML de run ou --run-name.")
 
     if run_name is None:
-        with open(config_path, encoding="utf-8") as f:
-            run_name = str(yaml.safe_load(f)["name"])
+        # Le fichier de scoring est suffixé par le modèle : lire le seul champ `name`
+        # du YAML viserait un fichier inexistant (cf. `resolve_run_name`).
+        run_name = resolve_run_name(str(config_path), htr=htr)
 
     prefix = dest_prefix or Secrets().s3_predictions_prefix
     dest = export_run(run_name, prefix, source_dir=source_dir, htr=htr)

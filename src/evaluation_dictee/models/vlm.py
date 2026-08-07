@@ -14,7 +14,7 @@ from PIL import Image
 from evaluation_dictee.config import ModelConfig, PromptConfig
 from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy, load_image
-from evaluation_dictee.models.base import CopyPrediction, ItemPrediction, Scorer
+from evaluation_dictee.models.base import CODE_NON_PARSE, CopyPrediction, ItemPrediction, Scorer
 from evaluation_dictee.pipeline.alignment import best_realignment, needs_realignment
 from evaluation_dictee.pipeline.prompts import (
     PROMPT_DICTATION,
@@ -186,7 +186,7 @@ class VLMScorer(Scorer):
             raw_items = []
 
         # Séquences dans l'ordre renvoyé par le modèle (avant ré-alignement éventuel).
-        codes_seq = [str(it.get("code", "?")).strip() for it in raw_items]
+        codes_seq = [str(it.get("code", CODE_NON_PARSE)).strip() for it in raw_items]
         trans_seq = [it.get("transcription") for it in raw_items]
         conf_seq = [it.get("confidence") for it in raw_items]
 
@@ -194,7 +194,8 @@ class VLMScorer(Scorer):
         n_trans_utiles = sum(1 for t in trans_seq if t and str(t).strip())
         if not raw_items or n_trans_utiles == 0:
             items_vides = [
-                ItemPrediction(item_id=i, code="?", confidence=0.0) for i in copy.item_ids
+                ItemPrediction(item_id=i, code=CODE_NON_PARSE, confidence=0.0)
+                for i in copy.item_ids
             ]
             return CopyPrediction(copy_id=copy.copy_id, items=items_vides, transcribed=False)
 
@@ -221,12 +222,12 @@ class VLMScorer(Scorer):
         for item_id in copy.item_ids:
             entry = by_id.get(item_id)
             if entry is None:
-                items.append(ItemPrediction(item_id=item_id, code="?", confidence=0.0))
+                items.append(ItemPrediction(item_id=item_id, code=CODE_NON_PARSE, confidence=0.0))
             else:
                 items.append(
                     ItemPrediction(
                         item_id=item_id,
-                        code=str(entry.get("code", "?")).strip(),
+                        code=str(entry.get("code", CODE_NON_PARSE)).strip(),
                         confidence=entry.get("confidence"),
                         transcription=entry.get("transcription"),
                         comparaison=entry.get("comparaison"),
