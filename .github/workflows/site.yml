@@ -43,6 +43,25 @@ concurrency:
 jobs:
   construire:
     runs-on: ubuntu-latest
+    # Environnement commun aux étapes de vérification et de rendu (GitHub
+    # Actions ne prend pas en charge les ancres YAML : on factorise ici).
+    env:
+      # ── Accès au S3 du SSP Cloud (MinIO) ────────────────────────────────
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # Vide avec un compte de service (pas de jeton de session) : botocore
+      # normalise alors la variable en `None`, c'est sans effet.
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-1
+      # `fsspec`/`s3fs` lisent l'endpoint dans l'environnement. `AWS_S3_ENDPOINT`
+      # seul ne suffit PAS : botocore l'ignore et route vers s3.amazonaws.com.
+      # C'est `AWS_ENDPOINT_URL` qui dirige vers MinIO (vérifié sur ce projet).
+      AWS_S3_ENDPOINT: ${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+      AWS_ENDPOINT_URL: https://${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+      FSSPEC_S3_ENDPOINT_URL: https://${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
+      # ── Paramètres des pages de résultats (cf. website/_analyse.py) ─────
+      # Valeur explicite : une variable vide écraserait le défaut du module.
+      S3_PREDICTIONS_PREFIX: ${{ vars.S3_PREDICTIONS_PREFIX || 's3://projet-production-ecrits-depp/predictions' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -70,23 +89,27 @@ jobs:
           # rendu a besoin ; le paquet du projet fournit les calculs.
           uv sync --extra website
 
+      # `_analyse.py` capture toute erreur S3 pour garder les pages rendables :
+      # un échec d'accès ne se voit alors que par des « — » sur le site publié.
+      # Cette étape fait remonter l'erreur dans les logs. Non bloquante : mieux
+      # vaut republier un site incomplet que ne rien publier.
+      - name: Vérifier l'accès au S3
+        continue-on-error: true
+        # Seules les LONGUEURS des secrets sont affichées, jamais leur valeur.
+        run: |
+          echo "clé    : ${#AWS_ACCESS_KEY_ID} caractères"
+          echo "secret : ${#AWS_SECRET_ACCESS_KEY} caractères"
+          echo "jeton  : ${#AWS_SESSION_TOKEN} caractères"
+          echo "endpoint : ${AWS_ENDPOINT_URL}"
+          uv run python -c "
+          import os, fsspec
+          prefixe = os.environ['S3_PREDICTIONS_PREFIX']
+          fs = fsspec.filesystem('s3')
+          print('endpoint résolu :', fs.s3.meta.endpoint_url)
+          print(prefixe, '->', fs.ls(prefixe, detail=False))
+          "
+
       - name: Rendre le site
-        env:
-          # ── Accès au S3 du SSP Cloud (MinIO) ──────────────────────────────
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          # Vide avec un compte de service (pas de jeton de session) : botocore
-          # normalise alors la variable en `None`, c'est sans effet.
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-          AWS_DEFAULT_REGION: us-east-1
-          # `fsspec`/`s3fs` lisent l'endpoint dans l'environnement : on renseigne
-          # les trois noms reconnus selon les versions de botocore et de fsspec.
-          AWS_S3_ENDPOINT: ${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
-          AWS_ENDPOINT_URL: https://${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
-          FSSPEC_S3_ENDPOINT_URL: https://${{ vars.AWS_S3_ENDPOINT || 'minio.lab.sspcloud.fr' }}
-          # ── Paramètres des pages de résultats (cf. website/_analyse.py) ───
-          # Valeur explicite : une variable vide écraserait le défaut du module.
-          S3_PREDICTIONS_PREFIX: ${{ vars.S3_PREDICTIONS_PREFIX || 's3://projet-production-ecrits-depp/predictions' }}
         # Rendu depuis la RACINE du dépôt : `_analyse.py` remonte jusqu'au
         # dossier contenant `src/evaluation_dictee` pour importer le paquet et
         # résoudre `configs/grille_dictee_2015.json`.
