@@ -75,6 +75,8 @@ jobs:
           # ── Accès au S3 du SSP Cloud (MinIO) ──────────────────────────────
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Vide avec un compte de service (pas de jeton de session) : botocore
+          # normalise alors la variable en `None`, c'est sans effet.
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_DEFAULT_REGION: us-east-1
           # `fsspec`/`s3fs` lisent l'endpoint dans l'environnement : on renseigne
@@ -98,9 +100,10 @@ jobs:
   deployer:
     needs: construire
     runs-on: ubuntu-latest
-    # Un déploiement Pages sain prend moins d'une minute : on coupe court
-    # plutôt que de laisser tourner le sondage pendant dix minutes.
-    timeout-minutes: 10
+    # Un déploiement courant prend moins d'une minute, mais la toute première
+    # publication d'un site (provision CDN + certificat TLS) peut dépasser
+    # 8 minutes : on garde de la marge pour ne pas tuer un déploiement valide.
+    timeout-minutes: 20
     environment:
       name: github-pages
       url: ${{ steps.deploiement.outputs.page_url }}
