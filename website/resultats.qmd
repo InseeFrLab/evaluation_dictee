@@ -1090,7 +1090,9 @@ if RUNS:
 
 Les copies sur lesquelles le modèle s'écarte le plus de l'expert sont détaillées
 une par une — statistiques, transcription et codages comparés — dans la page
-**[Écarts IA – humain](ecarts.qmd)**.
+« Écarts IA – humain ». Elle porte sur des productions écrites de mineurs et
+n'est donc pas publiée : la rendre depuis le SSP Cloud, en retirant l'exclusion
+de `ecarts.qmd` dans `website/_quarto.yml`.
 
 ```{python}
 #| echo: false

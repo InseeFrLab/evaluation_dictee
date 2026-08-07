@@ -91,23 +91,37 @@ jobs:
 
       # `_analyse.py` capture toute erreur S3 pour garder les pages rendables :
       # un échec d'accès ne se voit alors que par des « — » sur le site publié.
-      # Cette étape fait remonter l'erreur dans les logs. Non bloquante : mieux
-      # vaut republier un site incomplet que ne rien publier.
+      # Cette étape fait remonter l'erreur. Non bloquante : mieux vaut republier
+      # un site incomplet que ne rien publier.
+      #
+      # Le résultat est écrit dans `$GITHUB_STEP_SUMMARY`, donc affiché sur la
+      # page de résumé du run : inutile d'aller déplier les logs du job.
       - name: Vérifier l'accès au S3
         continue-on-error: true
         # Seules les LONGUEURS des secrets sont affichées, jamais leur valeur.
         run: |
-          echo "clé    : ${#AWS_ACCESS_KEY_ID} caractères"
-          echo "secret : ${#AWS_SECRET_ACCESS_KEY} caractères"
-          echo "jeton  : ${#AWS_SESSION_TOKEN} caractères"
-          echo "endpoint : ${AWS_ENDPOINT_URL}"
-          uv run python -c "
+          {
+            echo "clé      : ${#AWS_ACCESS_KEY_ID} caractères"
+            echo "secret   : ${#AWS_SECRET_ACCESS_KEY} caractères"
+            echo "jeton    : ${#AWS_SESSION_TOKEN} caractères"
+            echo "endpoint : ${AWS_ENDPOINT_URL}"
+            echo "préfixe  : ${S3_PREDICTIONS_PREFIX}"
+            uv run python -c "
           import os, fsspec
           prefixe = os.environ['S3_PREDICTIONS_PREFIX']
           fs = fsspec.filesystem('s3')
           print('endpoint résolu :', fs.s3.meta.endpoint_url)
-          print(prefixe, '->', fs.ls(prefixe, detail=False))
-          "
+          for entree in fs.ls(prefixe, detail=False):
+              print('  ', entree)
+          " 2>&1
+          } > "${RUNNER_TEMP}/diagnostic-s3.txt" || true
+          cat "${RUNNER_TEMP}/diagnostic-s3.txt"
+          {
+            echo "## Diagnostic S3"
+            echo '```'
+            cat "${RUNNER_TEMP}/diagnostic-s3.txt"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Rendre le site
         # Rendu depuis la RACINE du dépôt : `_analyse.py` remonte jusqu'au
