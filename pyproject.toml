@@ -22,6 +22,12 @@ dependencies = [
     "httpx>=0.27",
     # Métriques
     "scikit-learn>=1.4",
+    # Export du rapport HTML (`evaluation/html_report.py`) : ce module de `src/`
+    # les importe au niveau module, ce sont donc des dépendances du paquet et
+    # non des extras. Elles n'arrivaient jusqu'ici qu'en transitif via
+    # JupyterLab, ce qui cassait `uv sync` seul (et donc la CI).
+    "nbformat>=5.10",
+    "nbconvert>=7.16",
     # Suivi d'expériences (traces LLM, prompts, scores)
     "langfuse>=4,<5",
     # Confort
@@ -49,7 +55,6 @@ website = [
     "ipykernel>=6.29",
     "matplotlib>=3.11.1",
     "nbclient>=0.10",
-    "nbformat>=5.10",
 ]
 
 # Outillage de développement (lint, typage, tests) — NON publié avec le paquet.
