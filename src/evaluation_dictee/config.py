@@ -19,7 +19,6 @@ class Secrets(BaseSettings):
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
     aws_s3_endpoint: str = "minio.lab.sspcloud.fr"
-    s3_bucket: str = ""
     # Répertoire S3 où sont déposées les prédictions finies (JAMAIS dans Git : les
     # transcriptions sont des données d'élèves mineurs). Sert à relancer notebooks
     # et site Quarto sans réexécuter le pipeline. Surchargé par S3_PREDICTIONS_PREFIX.

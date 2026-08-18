@@ -446,7 +446,7 @@ evaluation_dictee/
 │   ├── 04_diagnostic.ipynb          ← inspection copie par copie
 │   └── 05_analyse_transcription_htr.ipynb   ← analyse HTR
 ├── website/                   ← site Quarto (archi, résultats, métriques, fine-tuning)
-├── tests/                     ← 83 tests unitaires (pytest)
+├── tests/                     ← 155 tests unitaires (pytest)
 └── docs/                      ← décisions, grille de codage, schéma du pipeline
 ```
 
