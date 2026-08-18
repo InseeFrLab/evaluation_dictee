@@ -40,10 +40,25 @@ def main() -> None:
             "Uniquement valide en approche two_stage."
         ),
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            "Surcharge data.limit : n'évaluer que les N premières copies (test rapide). "
+            "N'entre PAS dans le nom du run, à la différence de --model-name : un run "
+            "limité et sa reprise complète partagent donc le même checkpoint, et "
+            "relancer sans --limit poursuit là où le test s'est arrêté."
+        ),
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     config = override_model_names(config, args.model_name, args.model_stage2_name)
+    if args.limit is not None:
+        config = config.model_copy(
+            update={"data": config.data.model_copy(update={"limit": args.limit})}
+        )
     secrets = Secrets()
 
     if config.model_stage2 is not None:
