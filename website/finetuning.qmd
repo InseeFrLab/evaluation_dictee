@@ -27,6 +27,8 @@ après avoir établi ce que font les modèles de base, pour mesurer le gain qu'i
 
 **Improving Automatic Text Recognition with Language Models in the PyLaia Open-Source Library**, Solène Tarride and Yoann Schneider and Marie Generali-Lince and Mélodie Boillet and Bastien Abadie and Christopher Kermorvant, 2024, https://arxiv.org/abs/2404.18722
 
+Modèle OCR / HTR **Kraken** : https://github.com/mittagessen/kraken
+
 
 ## Les données : Scoledit
 
