@@ -68,3 +68,7 @@ website/.quarto/
 website/_freeze/
 /.quarto/
 **/*.quarto_ipynb
+# Rendu d'un .md de la racine (README compris) par l'extension Quarto de VS Code,
+# déclenché à l'enregistrement. Artefact de build, jamais commité.
+/README.html
+/README_files/
