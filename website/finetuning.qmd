@@ -19,6 +19,15 @@ Le fine-tuning est une **phase ultérieure** du projet (méthode « D »). Il vi
 après avoir établi ce que font les modèles de base, pour mesurer le gain qu'il apporte.
 :::
 
+## Revue de littérature sur les modèles HTR
+
+**TrOCR: Transformer-based Optical Character Recognition with Pre-trained Models**, Minghao Li and Tengchao Lv and Jingye Chen and Lei Cui and Yijuan Lu and Dinei Florencio and Cha Zhang and Zhoujun Li and Furu Wei, 2021, https://arxiv.org/abs/2109.10282
+
+**Adapting TrOCR for Printed Tigrinya Text Recognition: Word-Aware Loss Weighting for Cross-Script Transfer Learning**, Yonatan Haile Medhanie and Yuanhua Ni, 2026, https://arxiv.org/abs/2604.20813
+
+**Improving Automatic Text Recognition with Language Models in the PyLaia Open-Source Library**, Solène Tarride and Yoann Schneider and Marie Generali-Lince and Mélodie Boillet and Bastien Abadie and Christopher Kermorvant, 2024, https://arxiv.org/abs/2404.18722
+
+
 ## Les données : Scoledit
 
 L'entraînement s'appuie sur le corpus **Scoledit**, qui couvre cinq niveaux (CP,
