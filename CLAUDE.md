@@ -119,6 +119,7 @@ evaluation_ecrit/
 │   ├── evaluation/           ← métriques, calibration, comparaison annotateurs
 │   └── utils/                ← logging, Langfuse, helpers
 ├── scripts/                  ← points d'entrée CLI (run_benchmark, prepare_data…)
+├── launchers/                ← lanceurs shell des runs longs (launch_eval.sh)
 ├── tests/                    ← tests unitaires (pytest)
 ├── notebooks/                ← exploration (ne pas y mettre de logique réutilisable)
 └── docs/                     ← note de cadrage, grille de codage, décisions
@@ -158,63 +159,52 @@ uv run ruff format src tests    # formatage
 uv run pytest                   # tests
 uv run mypy src                 # typage
 
-# Lancer un benchmark à partir d'une config
+# Lancer un benchmark à partir d'une config (un passage, dans le terminal)
 uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
+
+# Lancer l'échantillon complet (~30 h) : passer par le lanceur, jamais à la main
+launchers/launch_eval.sh
 
 # Rendre le site Quarto (les pages recalculent leurs figures au rendu)
 uv sync --extra website
 uv run quarto render website
 ```
 
-### Runs longs — utiliser screen ou nohup
+### Runs longs — passer par `launchers/launch_eval.sh`
 
 Un benchmark complet (3469 copies × ~30 s) prend ~30 h. **Ne jamais le lancer
-directement dans le terminal du navigateur** : au moindre plantage réseau, mise
-en veille, fermeture d'onglet, le processus est tué et tout est perdu.
+directement dans le terminal du navigateur** : au moindre plantage réseau, mise en
+veille ou fermeture d'onglet, le processus est tué.
 
-> **Note Onyxia** : `tmux` n'est pas disponible sur les services vscode-python
-> du SSP Cloud (`apt-get install tmux` échoue). Utiliser `screen` ou `nohup`.
+Le lanceur `launchers/launch_eval.sh` est le point d'entrée unique. Il vérifie
+l'environnement, détache le run (`setsid` + `nohup`), écrit un log horodaté par
+lancement, relance les copies en échec et exporte le résultat vers S3 :
 
-**Toujours créer le dossier logs d'abord :**
 ```bash
-mkdir -p logs
+launchers/launch_eval.sh            # lancer l'échantillon complet
+launchers/launch_eval.sh --status   # avancement : copies, débit mesuré, heure de fin
+launchers/launch_eval.sh --stop     # arrêt propre, sans process orphelin
 ```
 
-**Option 1 (recommandée) — screen.** Session détachable, tu peux fermer le
-navigateur et revenir le lendemain.
-```bash
-screen -S dictee                                            # créer la session
-uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml
-# Détacher : Ctrl+A puis D  (le job continue en arrière-plan)
-screen -r dictee                                            # se rattacher plus tard
-screen -ls                                                  # lister les sessions
-```
+Les options qui identifient le run (`--config`, `--model-name`) doivent être
+**répétées sur les trois commandes** : le nom d'un run est `<name>_<modèle(s)>`, et
+sans elles `--status` interrogerait un autre run. Détails : `--help`,
+`launchers/README.md`, section « Runs longs » du README.
 
-**Option 2 — nohup.** Sans interface interactive, log dans un fichier.
-```bash
-ps -ef | grep run_benchmark | grep -v grep   # AVANT tout : rien ne doit tourner
-mkdir -p logs
-
-# Un log DISTINCT par run : deux runs qui partagent un log sont illisibles après coup.
-nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml \
-      > logs/dictee_end2end.log 2>&1 &
-nohup uv run scripts/run_benchmark.py --config configs/scoring/dictee_two_stage.yaml \
-      > logs/dictee_two_stage.log 2>&1 &
-
-tail -f logs/dictee_end2end.log                        # suivre en direct
-head -20 logs/dictee_end2end.log | grep -i reprise     # la reprise a-t-elle pris ?
-
-# Arrêter : PAS `kill $(cat *.pid)`. `nohup uv run …` crée un wrapper `uv run` ET un
-# `python3 scripts/run_benchmark.py` ; `$!` ne capture que le wrapper, dont le kill
-# laisserait l'enfant orphelin continuer d'écrire (cause de runs concurrents observée).
-pkill -f "run_benchmark.py --config configs/scoring/dictee_end2end.yaml"
-```
+> **Note Onyxia** : `tmux` n'est pas disponible sur les services vscode-python du SSP
+> Cloud (`apt-get install tmux` échoue). Pour un run *interactif* (démo, mise au point
+> d'un prompt), utiliser `screen`. Pour tout le reste, le lanceur.
 
 > **Un seul run par fichier de sortie.** Deux runs qui appendent le même JSONL
-> dupliquent les copies et faussent les métriques. Un verrou `flock` sur
-> `<sortie>.lock` fait échouer le second dès le démarrage. Si un run annonce
-> `0 déjà faites` alors qu'un checkpoint existe, l'arrêter : le nom du fichier de
-> sortie ne correspond pas au checkpoint (modèle ou `name` différent).
+> dupliquent les copies et faussent les métriques ; un verrou `flock` sur
+> `<sortie>.lock` fait échouer le second dès le démarrage. Le lanceur le vérifie
+> avant de partir.
+
+> **Ne jamais arrêter un run par son PID.** `uv run …` crée un wrapper `uv run` ET un
+> `python3 scripts/run_benchmark.py` ; `$!` ne capture que le wrapper, dont le kill
+> laisserait l'enfant orphelin continuer d'écrire (cause de runs concurrents
+> observée). `launchers/launch_eval.sh --stop` s'en charge ; à la main, c'est
+> `pkill -f "run_benchmark.py --config <la config>"`.
 
 ### Checkpointing et reprise après crash
 

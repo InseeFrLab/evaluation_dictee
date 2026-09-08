@@ -77,5 +77,12 @@ website/.quarto/
 # Cache d'exécution : contient les résultats calculés (métriques lues sur S3).
 # On ne le versionne pas → le rendu réexécute et relit les prédictions depuis S3.
 website/_freeze/
+# Figures des vues « un modèle » / « une paire » de la page Résultats : écrites au
+# rendu (une par modèle et par section), donc régénérées comme le reste du site.
+website/figures/
 /.quarto/
 **/*.quarto_ipynb
+# Rendu d'un .md de la racine (README compris) par l'extension Quarto de VS Code,
+# déclenché à l'enregistrement. Artefact de build, jamais commité.
+/README.html
+/README_files/

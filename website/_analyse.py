@@ -21,7 +21,9 @@ import html
 import math
 import os
 import sys
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pandas as pd
@@ -88,16 +90,10 @@ APPROCHES: dict[str, str] = {
     "two-stage": "dictee_two_stage",
 }
 
-#: Modèles comparés, dans l'ordre d'affichage. Le benchmark suffixe TOUJOURS ses
-#: sorties par le nom du modèle (`<name>_<modele>_predictions.jsonl`, cf.
-#: `config.run_output_name`) : le site nomme donc le modèle pour retrouver le
-#: fichier. Un modèle non exporté est simplement omis, avec une note — on ne
-#: substitue JAMAIS un autre modèle, ce qui fausserait la comparaison.
-MODELES: list[str] = _liste_env("RESULTATS_MODELES", ["gemma4-26b-moe", "qwen3-6-35b-moe"])
-
-#: Modèle utilisé par les pages qui n'ont pas d'axe « modèle » (page « Écarts »,
-#: dont le détail copie par copie serait illisible multiplié par les modèles).
-MODELE_REFERENCE = os.environ.get("RESULTATS_MODELE_REFERENCE", MODELES[0])
+#: Modèles retenus si la découverte automatique ne trouve rien (S3 injoignable,
+#: rendu hors ligne sans prédictions) : la page reste rendable et nomme ce qu'elle
+#: attend, au lieu d'afficher un sélecteur vide.
+MODELES_DEFAUT: list[str] = ["gemma4-26b-moe", "qwen3-6-35b-moe"]
 
 #: Approche de référence quand une analyse exige un run unique (classement des
 #: pires copies, tri des items). Par défaut l'approche privilégiée du projet.
@@ -108,11 +104,6 @@ def libelle_run(approche: str, modele: str) -> str:
     """Libellé d'un run croisant une approche et un modèle (clé des dictionnaires)."""
     return f"{approche} · {modele}"
 
-
-#: Run servant de référence quand une analyse en exige un seul.
-RUN_REFERENCE = os.environ.get(
-    "RESULTATS_RUN_REFERENCE", libelle_run(APPROCHE_REFERENCE, MODELE_REFERENCE)
-)
 
 #: Chemin de la grille de codage (mots attendus, ordre de la dictée).
 GRID_PATH = os.environ.get("RESULTATS_GRID_PATH", "configs/grille_dictee_2015.json")
@@ -150,9 +141,39 @@ COLONNE_ENCRE = "ink_ratio"
 C_EXPERT = "#1f4e79"
 C_MODELE = "#c44536"
 C_OK, C_MOYEN, C_PB = "#2e7d32", "#ef6c00", "#c62828"
-#: Une couleur par run, dans l'ordre de `RUNS`.
-COULEURS_RUN = ["#c44536", "#7b2d8b", "#0b7285", "#946200"]
+#: Une famille de couleurs par approche, une nuance par modèle. La couleur d'un
+#: run ne dépend donc PAS de l'ordre de chargement : `end-to-end · gemma` garde
+#: la même teinte dans la vue d'un modèle et dans une comparaison de paires, et
+#: l'approche reste lisible d'un coup d'œil (rouge = end-to-end, bleu =
+#: two-stage), le modèle n'étant que la nuance.
+NUANCES_APPROCHE: dict[str, list[str]] = {
+    "end-to-end": ["#c44536", "#e0897c", "#8c2f24", "#f0b8b0"],
+    "two-stage": ["#0b7285", "#57a5b3", "#06424d", "#a5d2da"],
+}
+
+#: Palette de repli quand une approche n'est pas dans `NUANCES_APPROCHE`.
+COULEURS_RUN = ["#c44536", "#0b7285", "#7b2d8b", "#946200"]
 Z95 = 1.96
+
+
+def couleur_run(approche: str, modele: str, modeles: list[str] | None = None) -> str:
+    """Couleur d'un run : teinte de l'approche, nuance du modèle.
+
+    Args:
+        approche: libellé d'approche (clé de `APPROCHES`).
+        modele: nom du modèle.
+        modeles: liste de référence fixant l'ordre des nuances. [défaut : `MODELES`]
+
+    Returns:
+        La couleur hexadécimale du run.
+    """
+    liste = modeles if modeles is not None else MODELES
+    rang_modele = liste.index(modele) if modele in liste else 0
+    nuances = NUANCES_APPROCHE.get(approche)
+    if nuances is None:
+        rang_approche = list(APPROCHES).index(approche) if approche in APPROCHES else 0
+        return COULEURS_RUN[(rang_modele * len(APPROCHES) + rang_approche) % len(COULEURS_RUN)]
+    return nuances[rang_modele % len(nuances)]
 
 
 def init_matplotlib() -> None:
@@ -295,6 +316,133 @@ def bloc_notes() -> str:
     return "\n".join(lignes)
 
 
+# ── Vues commutables : un menu déroulant, une vue par modèle ──────────────────
+# La page « Résultats » rend TOUS les modèles au moment du rendu, chacun dans son
+# `div`, et un menu déroulant en montre un seul (`website/js/vues-modeles.html`).
+# Ce choix garde une seule page, une seule URL et un basculement instantané ; le
+# coût est un rendu plus long, proportionnel au nombre de modèles exportés.
+#
+# Les fences utilisent SIX deux-points : le contenu d'une vue contient lui-même
+# des `:::` (callouts, `panel-tabset`), et pandoc ne referme correctement une
+# division imbriquée que si la fence extérieure est plus longue.
+FENCE_VUE = ":" * 6
+
+#: Dossier des figures des vues, relatif au dossier `website/`. Les figures d'une
+#: vue ne peuvent pas être la sortie d'une cellule (il faut les intercaler dans le
+#: `div` de chaque modèle) : elles sont donc écrites sur disque et insérées en
+#: Markdown. Le dossier est ignoré par Git, comme `_freeze/`.
+DOSSIER_FIGURES = Path("figures")
+
+
+def _slug(texte: str) -> str:
+    """Réduit un libellé à un nom de fichier sûr (minuscules, tirets)."""
+    garde = [c if c.isalnum() else "-" for c in texte.lower()]
+    return "-".join(filter(None, "".join(garde).split("-")))
+
+
+def enregistrer_figure(fig, nom: str, legende: str = "") -> str:
+    """Écrit une figure dans `figures/` et renvoie le Markdown qui l'insère.
+
+    Args:
+        fig: figure matplotlib, fermée après écriture.
+        nom: identifiant de la figure (section + vue), transformé en nom de fichier.
+        legende: légende affichée sous la figure.
+
+    Returns:
+        Le Markdown de l'image, à `print()` dans une cellule `output: asis`.
+    """
+    import matplotlib.pyplot as plt
+
+    DOSSIER_FIGURES.mkdir(exist_ok=True)
+    chemin = DOSSIER_FIGURES / f"{_slug(nom)}.png"
+    fig.savefig(chemin, bbox_inches="tight")
+    plt.close(fig)
+    return f"![{legende}]({chemin.as_posix()})"
+
+
+@contextmanager
+def vue_modele(modele: str, actif: str) -> Iterator[None]:
+    """Ouvre la vue d'un modèle : tout ce qui est imprimé dedans lui appartient.
+
+    Args:
+        modele: modèle décrit par la vue.
+        actif: modèle sélectionné au chargement de la page (vue visible sans JS).
+    """
+    classes = ".vue-modele" + (" .vue-active" if modele == actif else "")
+    print(f'{FENCE_VUE} {{{classes} data-vue-modele="{html.escape(modele, quote=True)}"}}')
+    yield
+    print(FENCE_VUE)
+
+
+@contextmanager
+def vue_paire(paire: tuple[str, str], actif: tuple[str, str] | None) -> Iterator[None]:
+    """Ouvre la vue d'une paire de modèles comparés.
+
+    Args:
+        paire: couple (modèle A, modèle B), dans l'ordre de `MODELES`.
+        actif: paire sélectionnée au chargement de la page, ou None.
+    """
+    classes = ".vue-paire" + (" .vue-active" if paire == actif else "")
+    cle = html.escape("|".join(paire), quote=True)
+    print(f'{FENCE_VUE} {{{classes} data-vue-paire="{cle}"}}')
+    yield
+    print(FENCE_VUE)
+
+
+def _options(modeles: list[str], selection: str) -> str:
+    """Balises `<option>` d'un menu déroulant de modèles."""
+    return "".join(
+        f'<option value="{html.escape(m, quote=True)}"'
+        f"{' selected' if m == selection else ''}>{html.escape(m)}"
+        f"{'' if len(approches_du_modele(m)) == len(APPROCHES) else ' (1 approche)'}"
+        "</option>"
+        for m in modeles
+    )
+
+
+def selecteur_modele(modeles: list[str], selection: str, identifiant: str) -> str:
+    """Menu déroulant choisissant le modèle affiché par les vues « un modèle ».
+
+    Args:
+        modeles: modèles proposés, dans l'ordre d'affichage.
+        selection: modèle sélectionné au chargement.
+        identifiant: identifiant HTML, unique dans la page.
+
+    Returns:
+        Le HTML du menu, à `print()` dans une cellule `output: asis`.
+    """
+    return (
+        f'<div class="selecteur-vue" data-modeles="{html.escape("|".join(modeles), quote=True)}">'
+        f'<label for="{identifiant}">Modèle affiché</label>'
+        f'<select id="{identifiant}" class="selecteur-modele">'
+        f"{_options(modeles, selection)}</select>"
+        '<span class="selecteur-aide">end-to-end vs two-stage, pour ce modèle</span>'
+        "</div>"
+    )
+
+
+def selecteur_paire(modeles: list[str], selection: tuple[str, str]) -> str:
+    """Deux menus déroulants choisissant les deux modèles comparés entre eux.
+
+    Args:
+        modeles: modèles proposés, dans l'ordre d'affichage.
+        selection: paire sélectionnée au chargement.
+
+    Returns:
+        Le HTML des deux menus, à `print()` dans une cellule `output: asis`.
+    """
+    return (
+        f'<div class="selecteur-vue" data-modeles="{html.escape("|".join(modeles), quote=True)}">'
+        '<label for="selecteur-paire-a">Comparer</label>'
+        '<select id="selecteur-paire-a" class="selecteur-paire" data-role="a">'
+        f"{_options(modeles, selection[0])}</select>"
+        '<label for="selecteur-paire-b">à</label>'
+        '<select id="selecteur-paire-b" class="selecteur-paire" data-role="b">'
+        f"{_options(modeles, selection[1])}</select>"
+        "</div>"
+    )
+
+
 # ── Chargement ────────────────────────────────────────────────────────────────
 @dataclass
 class Run:
@@ -304,6 +452,10 @@ class Run:
     nom: str
     approche: str
     modele: str
+    #: Modèle DEMANDÉ, c'est-à-dire celui de l'étape 1 et la clé des menus
+    #: déroulants. `modele` peut lui ajouter l'étape 2 (`m1 → m2`) : il sert à
+    #: l'affichage, jamais au filtrage.
+    modele_cle: str
     couleur: str
     df: pd.DataFrame
     copies: pd.DataFrame = field(repr=False)
@@ -384,6 +536,82 @@ def _run_du_modele(base: str, modele: str) -> str | None:
     return candidats[0] if candidats else None
 
 
+def modeles_exportes() -> list[str]:
+    """Modèles pour lesquels au moins un run de scoring est exporté, triés.
+
+    La liste des modèles affichés par le site est **déduite de S3** : tout run
+    exporté apparaît au rendu suivant, sans toucher au code. Le nom du modèle est
+    le suffixe du nom de run (`<base>_<modele>`, cf. `config.run_output_name`).
+
+    Le two-stage peut suffixer DEUX modèles (`<base>_<etape1>_<etape2>`) : un
+    suffixe dont un autre suffixe est le préfixe est donc ramené à ce préfixe,
+    c'est-à-dire au modèle de l'étape 1 — le seul axe de comparaison du site.
+
+    Returns:
+        Les noms de modèles, par ordre alphabétique. Liste vide si le préfixe est
+        injoignable ou ne contient aucun run.
+    """
+    suffixes = sorted(
+        {
+            nom[len(base) + 1 :]
+            for base in APPROCHES.values()
+            for nom in _noms_exportes()
+            if nom.startswith(base + "_")
+        }
+    )
+    modeles = [
+        next((autre for autre in suffixes if autre != s and s.startswith(autre + "_")), s)
+        for s in suffixes
+    ]
+    return sorted(dict.fromkeys(modeles))
+
+
+#: Modèles comparés, dans l'ordre d'affichage. Le benchmark suffixe TOUJOURS ses
+#: sorties par le nom du modèle (`<name>_<modele>_predictions.jsonl`, cf.
+#: `config.run_output_name`) : le site nomme donc le modèle pour retrouver le
+#: fichier. Un modèle non exporté est simplement omis, avec une note — on ne
+#: substitue JAMAIS un autre modèle, ce qui fausserait la comparaison.
+#: `RESULTATS_MODELES` force la liste ; sinon elle vient de S3.
+MODELES: list[str] = _liste_env("RESULTATS_MODELES", modeles_exportes() or MODELES_DEFAUT)
+
+
+def approches_du_modele(modele: str) -> list[str]:
+    """Approches réellement exportées pour un modèle, dans l'ordre d'affichage."""
+    return [approche for approche, base in APPROCHES.items() if _run_du_modele(base, modele)]
+
+
+#: Modèles évalués sur TOUTES les approches : les seuls pour lesquels la
+#: comparaison end-to-end vs two-stage est complète. Ils sont préférés comme
+#: sélection par défaut, pour que la page s'ouvre sur une vue non tronquée.
+MODELES_COMPLETS: list[str] = [
+    modele for modele in MODELES if len(approches_du_modele(modele)) == len(APPROCHES)
+]
+
+#: Modèle utilisé par les pages qui n'ont pas d'axe « modèle » (page « Écarts »,
+#: dont le détail copie par copie serait illisible multiplié par les modèles), et
+#: sélection initiale du menu déroulant de la page « Résultats ».
+MODELE_REFERENCE = os.environ.get(
+    "RESULTATS_MODELE_REFERENCE", (MODELES_COMPLETS or MODELES or [""])[0]
+)
+
+#: Run servant de référence quand une analyse en exige un seul.
+RUN_REFERENCE = os.environ.get(
+    "RESULTATS_RUN_REFERENCE", libelle_run(APPROCHE_REFERENCE, MODELE_REFERENCE)
+)
+
+
+def paires_modeles(modeles: list[str] | None = None) -> list[tuple[str, str]]:
+    """Paires de modèles comparables, sans doublon ni ordre inverse.
+
+    Returns:
+        Les couples (modèle A, modèle B) avec A avant B dans la liste : une paire
+        par comparaison, l'ordre des deux menus déroulants étant normalisé par le
+        JavaScript de la page.
+    """
+    liste = modeles if modeles is not None else MODELES
+    return [(a, b) for i, a in enumerate(liste) for b in liste[i + 1 :]]
+
+
 def _modele_du_run(df: pd.DataFrame, nom: str, base: str) -> str:
     """Modèle(s) d'un run, lu dans les prédictions ou, à défaut, dans son nom.
 
@@ -429,6 +657,57 @@ def runs_attendus(modeles: list[str] | None = None) -> dict[str, str]:
     }
 
 
+#: Runs déjà lus, indexés par (approche, modèle). La page « Résultats » affiche
+#: chaque modèle dans sa propre vue PUIS chaque paire de modèles : sans ce cache,
+#: le même JSONL serait relu sur S3 autant de fois qu'il apparaît dans une vue.
+_CACHE_RUNS: dict[tuple[str, str], Run | None] = {}
+
+
+def _charger_run(approche: str, base: str, modele: str, manquants: list[str]) -> Run | None:
+    """Charge un run (approche × modèle), en mémorisant lectures et échecs.
+
+    Args:
+        approche: libellé d'approche (clé de `APPROCHES`).
+        base: champ `name` du run correspondant à l'approche.
+        modele: nom du modèle.
+        manquants: liste où consigner les runs non exportés, pour une note unique.
+
+    Returns:
+        Le run chargé, ou None s'il est absent, vide ou illisible.
+    """
+    cle = (approche, modele)
+    if cle in _CACHE_RUNS:
+        run = _CACHE_RUNS[cle]
+        if run is None and f"`{base}_{modele}`" not in manquants:
+            manquants.append(f"`{base}_{modele}`")
+        return run
+    _CACHE_RUNS[cle] = None
+    nom = _run_du_modele(base, modele)
+    if nom is None:
+        manquants.append(f"`{base}_{modele}`")
+        return None
+    try:
+        df = load_predictions(_chemin(nom))
+    except Exception as exc:  # noqa: BLE001 — la page doit rester rendable
+        NOTES.append(f"`{nom}` illisible ({type(exc).__name__}) : run omis.")
+        return None
+    if df.empty:
+        NOTES.append(f"`{nom}` est vide : run omis.")
+        return None
+    _CACHE_RUNS[cle] = Run(
+        label=libelle_run(approche, modele),
+        nom=nom,
+        approche=approche,
+        modele=_modele_du_run(df, nom, base),
+        modele_cle=modele,
+        couleur=couleur_run(approche, modele),
+        df=df,
+        copies=per_copy_metrics(df),
+        items=per_item_metrics(df),
+    )
+    return _CACHE_RUNS[cle]
+
+
 def charger_runs(modeles: list[str] | None = None) -> dict[str, Run]:
     """Charge les runs croisant chaque approche et chaque modèle demandé.
 
@@ -448,33 +727,11 @@ def charger_runs(modeles: list[str] | None = None) -> dict[str, Run]:
     demandes = modeles if modeles is not None else MODELES
     runs: dict[str, Run] = {}
     manquants: list[str] = []
-    i = 0
     for approche, base in APPROCHES.items():
         for modele in demandes:
-            label = libelle_run(approche, modele)
-            nom = _run_du_modele(base, modele)
-            if nom is None:
-                manquants.append(f"`{base}_{modele}`")
-                continue
-            try:
-                df = load_predictions(_chemin(nom))
-            except Exception as exc:  # noqa: BLE001 — la page doit rester rendable
-                NOTES.append(f"`{nom}` illisible ({type(exc).__name__}) : run omis.")
-                continue
-            if df.empty:
-                NOTES.append(f"`{nom}` est vide : run omis.")
-                continue
-            runs[label] = Run(
-                label=label,
-                nom=nom,
-                approche=approche,
-                modele=_modele_du_run(df, nom, base),
-                couleur=COULEURS_RUN[i % len(COULEURS_RUN)],
-                df=df,
-                copies=per_copy_metrics(df),
-                items=per_item_metrics(df),
-            )
-            i += 1
+            run = _charger_run(approche, base, modele, manquants)
+            if run is not None:
+                runs[run.label] = run
     if manquants:
         NOTES.append(
             f"Non exporté(s), donc absent(s) des comparaisons : {', '.join(manquants)}. "
@@ -516,15 +773,8 @@ def restreindre_corpus_commun(runs: dict[str, Run]) -> tuple[dict[str, Run], int
     restreints: dict[str, Run] = {}
     for label, r in runs.items():
         df = r.df[r.df["copy_id"].isin(commun)].reset_index(drop=True)
-        restreints[label] = Run(
-            label=r.label,
-            nom=r.nom,
-            approche=r.approche,
-            modele=r.modele,
-            couleur=r.couleur,
-            df=df,
-            copies=per_copy_metrics(df),
-            items=per_item_metrics(df),
+        restreints[label] = replace(
+            r, df=df, copies=per_copy_metrics(df), items=per_item_metrics(df)
         )
     return restreints, len(commun)
 
