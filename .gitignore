@@ -19,7 +19,18 @@
 !website/slides/img/**/*.jpg
 !website/img/**/*.png
 
+# ─── Sorties de run : jamais dans Git ──────────────────────────
+# Les logs de benchmark contiennent des extraits de copies (transcriptions
+# d'élèves mineurs) : les versionner ferait sortir des données du SSP Cloud.
+logs/
+checkpoints/
+
 # ─── MLflow (suivi local, ne pas versionner) ───────────────────
+# mlflow.db était suivi par Git malgré cette règle (un .gitignore n'a aucun
+# effet sur un fichier déjà indexé) : il a été retiré de l'index. C'était un
+# vestige d'une version antérieure du code, où le scoring était tracé dans
+# MLflow ; il l'est désormais dans Langfuse, MLflow ne servant plus qu'au
+# fine-tuning HTR sur GPU.
 mlflow.db
 mlruns/
 mlartifacts/
