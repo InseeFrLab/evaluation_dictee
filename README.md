@@ -265,7 +265,7 @@ evaluation_dictee/
 ├── .opencode/command/         ← commande openCode   ┘ aucune logique dupliquée
 ├── notebooks/                 ← 03 analyse, 04 diagnostic, 05 transcription HTR
 ├── website/                   ← site Quarto (archi, résultats, métriques, fine-tuning)
-├── tests/                     ← suite pytest
+├── tests/                     ← 155 tests unitaires (pytest)
 └── docs/                      ← décisions, grille de codage, schéma du pipeline
 ```
 
