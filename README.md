@@ -43,7 +43,11 @@ Deux architectures derrière la même interface `Scorer`, choisies par le champ
   Langfuse). `configs/finetune/`, `scripts/finetune_htr_scoledit.py` — voir l'en-tête
   du script pour les prérequis (`unsloth`, `trl`, `bitsandbytes`).
 - **Site Quarto** ([`website/`](website/)) : architecture, résultats, métriques et
-  fine-tuning expliqués pour un public statisticien novice en IA.
+  fine-tuning expliqués pour un public statisticien novice en IA. La page
+  « Résultats » **déduit de S3 la liste des modèles évalués** et propose un menu
+  déroulant : une vue par modèle (end-to-end vs two-stage), plus une zone de
+  comparaison de deux modèles au choix. Exporter un modèle suffit à l'y faire
+  apparaître, sans toucher au code.
 
 ---
 
@@ -117,8 +121,14 @@ Deux propriétés à connaître :
 
 ### 4. Le run complet
 
-**Ne pas lancer les ~3469 copies à la main** : `launchers/launch_eval.sh` s'en charge
-— voir [Runs longs](#runs-longs--le-lanceur-launcherslaunch_evalsh) ci-dessous.
+**Ne pas lancer les ~3469 copies à la main** (~30 h) : passer par le lanceur, qui
+détache le run et le mène jusqu'à l'export S3.
+
+```bash
+launchers/launch_eval.sh --config configs/scoring/dictee_end2end.yaml
+```
+
+Détails et suivi : [Runs longs](#runs-longs--le-lanceur-launcherslaunch_evalsh).
 
 ### 5. Analyser les résultats
 
@@ -141,47 +151,27 @@ Le **rapport pour la DEPP** se génère depuis la section 9 du notebook 03 :
 
 ## Runs longs : le lanceur `launchers/launch_eval.sh`
 
-Un benchmark complet (3469 copies × ~30 s) prend **~30 h**. Un run pareil ne doit
-jamais dépendre de l'onglet du navigateur : déconnexion, mise en veille, fermeture de
-la fenêtre, et le processus est tué.
+Un benchmark complet (3469 copies × ~30 s) prend **~30 h** : il ne doit jamais dépendre
+de l'onglet du navigateur. Le lanceur est le **point d'entrée unique** — il détache le
+run, le surveille, relance les copies en échec et exporte le résultat vers S3.
 
 ```bash
-launchers/launch_eval.sh            # lancer l'échantillon complet
-launchers/launch_eval.sh --status   # copies faites, débit mesuré, heure de fin estimée
-launchers/launch_eval.sh --stop     # arrêt propre, sans process orphelin
-launchers/launch_eval.sh --help     # toutes les options
+launchers/launch_eval.sh --config configs/scoring/dictee_end2end.yaml            # lancer
+launchers/launch_eval.sh --config configs/scoring/dictee_end2end.yaml --status   # avancement + heure de fin
+launchers/launch_eval.sh --config configs/scoring/dictee_end2end.yaml --stop     # arrêt propre
+launchers/launch_eval.sh --help                                                  # toutes les options
 ```
 
-**Ce qu'il fait à votre place**, et qu'un `nohup` tapé à la main oublie :
+> **`--config` (et `--model-name` si utilisé) sont à répéter sur les trois commandes.**
+> Le nom d'un run est `<name>_<modèle(s)>` : sans elles, `--status` interrogerait un
+> autre run et `--stop` en arrêterait un autre. Par défaut, `--config` vaut
+> `configs/scoring/dictee_end2end.yaml`.
 
-- **vérifie avant de partir** — `uv`, config valide, `data.limit: null` (sinon il
-  refuse : un run partiel se ferait passer pour complet), aucun run concurrent sur le
-  même fichier de sortie (process **et** verrou `flock`), secrets, modèle joignable,
-  CSV des labels lisible sur S3 ;
-- **détache le run** (`setsid` + `nohup`) : aucun signal du terminal ne l'atteint ;
-- **un log horodaté par lancement**, jamais écrasé — `logs/<run>_<horodatage>.log`,
-  avec `logs/<run>.latest.log` qui pointe vers le dernier ;
-- **contrôle le démarrage** en affichant `N copies au total, M à traiter (K déjà
-  faites)` — `0 déjà faites` alors qu'un checkpoint existe signalerait un run reparti
-  de zéro ;
-- **relance les copies en échec** (3 passages par défaut, `--passes`), et s'arrête dès
-  que le reliquat ne diminue plus ;
-- **exporte vers S3** en fin de run, sous le nom exact du run, en refusant d'écraser un
-  fichier S3 **plus gros** que le fichier local.
+Options courantes : `--model-name <modèle>` (surcharge le YAML), `--limit N` (test
+rapide, sans export S3), `--passes N` (nombre de relances des copies en échec, défaut
+3), `--foreground` (débogage).
 
-Pour une autre approche ou un autre modèle :
-
-```bash
-launchers/launch_eval.sh --config configs/scoring/dictee_two_stage.yaml
-launchers/launch_eval.sh --model-name gemma4-26b-moe
-```
-
-> **Répéter ces options sur `--status` et `--stop`.** Le nom d'un run est
-> `<name>_<modèle(s)>` : sans elles, `--status` interrogerait un autre run et `--stop`
-> en arrêterait un autre.
-
-`--status` donne un débit **mesuré** sur la passe en cours, plus fiable qu'une
-estimation a priori :
+Sortie de `--status`, avec un débit **mesuré** sur la passe en cours :
 
 ```text
 Run dictee_end2end_qwen3-6-35b-moe
@@ -192,10 +182,13 @@ Run dictee_end2end_qwen3-6-35b-moe
   fin estimée 2026-09-06 09:12 (dans 6h 34min)
 ```
 
+Les logs sont horodatés, un par lancement : `logs/<run>_<horodatage>.log`, avec
+`logs/<run>.latest.log` qui pointe vers le dernier. Détails des vérifications
+effectuées au démarrage : `launchers/README.md`.
+
 ### Depuis un assistant de code
 
-Le lanceur est le point d'entrée unique ; les assistants ne font que l'appeler, sans
-dupliquer la moindre logique.
+Les assistants ne font qu'appeler le lanceur, sans dupliquer la moindre logique.
 
 | Assistant | Fichier | Comment |
 |---|---|---|
@@ -203,33 +196,23 @@ dupliquer la moindre logique.
 | openCode | [`.opencode/command/launch.md`](.opencode/command/launch.md) | `/launch`, `/launch status`, `/launch stop` |
 | Un autre (Cursor, Codex…) | — | lui faire lire `launchers/README.md`, ou lancer le `.sh` soi-même |
 
-Pas encore d'assistant installé ? `launchers/install_assistant.sh` s'en charge et sait
-le brancher sur **llm.lab** plutôt que sur une API payante — llm.lab sert les deux
-protocoles attendus (compatible OpenAI pour openCode, API Anthropic Messages pour
-Claude Code). Le script sonde l'endpoint avant d'écrire et n'écrit jamais de secret sur
-disque. Détails : [`launchers/README.md`](launchers/README.md).
+Pas encore d'assistant installé ? `launchers/install_assistant.sh` l'installe et le
+branche sur **llm.lab** plutôt que sur une API payante. Détails :
+[`launchers/README.md`](launchers/README.md).
 
-### Piloter un run à la main
-
-Le lanceur couvre le cas normal, débogage compris (`--limit N`, `--foreground`). Pour
-un run vraiment interactif, `screen` reste disponible sur Onyxia — `tmux`, lui, n'y est
-pas installable :
-
-```bash
-screen -S dictee
-uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end.yaml
-# Ctrl+A puis D pour détacher ; screen -r dictee pour rattacher
-```
+### Deux règles à ne pas enfreindre
 
 > **Ne jamais arrêter un run par son PID.** `uv run …` crée DEUX process — le wrapper
-> `uv` et le vrai `python3`. Tuer le wrapper laisse l'enfant orphelin continuer
-> d'écrire dans le JSONL ; c'est ainsi que deux runs se sont retrouvés sur le même
-> fichier. `--stop` fait le nécessaire ; à la main,
+> `uv` et le vrai `python3` ; tuer le wrapper laisse l'enfant orphelin continuer
+> d'écrire dans le JSONL. Utiliser `--stop`, ou à défaut
 > `pkill -f "run_benchmark.py --config <la config>"`.
 
 > **Un seul run par fichier de sortie.** Un second run visant le même fichier s'arrête
 > sur le verrou `<sortie>.lock` : deux runs qui appendent le même JSONL dupliquent les
 > copies et faussent les métriques.
+
+Pour un run vraiment interactif (démo, mise au point d'un prompt), `screen` reste
+disponible sur Onyxia — `tmux`, lui, n'y est pas installable.
 
 ---
 
@@ -330,13 +313,13 @@ uv run python -c "from openai import OpenAI; from evaluation_dictee.config impor
 uv run pytest -q
 
 # ─────────── Runs ───────────
-launchers/launch_eval.sh                         # run COMPLET (~3469 copies) — la voie normale
-launchers/launch_eval.sh --status                # avancement + heure de fin estimée
-launchers/launch_eval.sh --stop                  # arrêt propre
-launchers/launch_eval.sh --limit 5               # test rapide de bout en bout, sans export S3
-# Autre config / autre modèle : répéter les MÊMES options sur les trois commandes.
-launchers/launch_eval.sh --config configs/scoring/dictee_two_stage.yaml
-launchers/launch_eval.sh --model-name gemma4-26b-moe
+# Run COMPLET (~3469 copies) — la voie normale. Répéter --config (et --model-name)
+# à l'identique sur les trois commandes : elles identifient le run.
+CFG=configs/scoring/dictee_end2end.yaml
+launchers/launch_eval.sh --config $CFG            # lancer
+launchers/launch_eval.sh --config $CFG --status   # avancement + heure de fin estimée
+launchers/launch_eval.sh --config $CFG --stop     # arrêt propre
+launchers/launch_eval.sh --config $CFG --limit 5  # test rapide de bout en bout, sans export S3
 
 uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml   # un passage, au premier plan
 uv run scripts/run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml      # transcription seule

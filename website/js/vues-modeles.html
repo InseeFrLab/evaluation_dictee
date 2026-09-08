@@ -1,0 +1,137 @@
+<!--
+  Menus déroulants de la page « Résultats ».
+
+  La page rend une vue par modèle (`.vue-modele[data-vue-modele]`) et une vue par
+  paire de modèles (`.vue-paire[data-vue-paire="A|B"]`) ; seule la vue portant
+  `.vue-active` est visible (CSS dans `style/styles.scss`). Ce script déplace
+  cette classe au gré des menus, sans rechargement.
+
+  Sans JavaScript, la vue active initiale — posée au rendu par `_analyse.vue_modele`
+  et `_analyse.vue_paire` — reste affichée : la page garde du sens, avec le modèle
+  de référence.
+
+  Le choix est mémorisé dans `localStorage` et reflété dans l'URL (`?modele=…`,
+  `?a=…&b=…`), pour qu'un lien pointe sur un modèle précis.
+-->
+<script>
+(function () {
+  "use strict";
+
+  var CLE_MODELE = "resultats.modele";
+  var CLE_PAIRE = "resultats.paire";
+
+  function lireMemoire(cle) {
+    try { return window.localStorage.getItem(cle); } catch (e) { return null; }
+  }
+
+  function ecrireMemoire(cle, valeur) {
+    try { window.localStorage.setItem(cle, valeur); } catch (e) { /* navigation privée */ }
+  }
+
+  function parametre(nom) {
+    return new URLSearchParams(window.location.search).get(nom);
+  }
+
+  /** Reflète la sélection dans l'URL, sans ajouter d'entrée d'historique. */
+  function majUrl(parametres) {
+    try {
+      var url = new URL(window.location.href);
+      Object.keys(parametres).forEach(function (cle) {
+        url.searchParams.set(cle, parametres[cle]);
+      });
+      window.history.replaceState(null, "", url);
+    } catch (e) {
+      // Page ouverte depuis le disque (file://) : l'URL n'est pas modifiable.
+    }
+  }
+
+  /**
+   * Publie la hauteur de la barre de navigation, dont le menu collant se décale.
+   * Le thème Quarto la fixe en haut de la fenêtre : sans ce décalage, le menu
+   * passerait dessous.
+   */
+  function majHauteurEntete() {
+    var entete = document.getElementById("quarto-header");
+    var hauteur = entete ? entete.offsetHeight : 0;
+    document.documentElement.style.setProperty("--hauteur-entete", hauteur + "px");
+  }
+
+  function activer(vues, attribut, valeur) {
+    var trouvee = false;
+    vues.forEach(function (vue) {
+      var actif = vue.getAttribute(attribut) === valeur;
+      vue.classList.toggle("vue-active", actif);
+      trouvee = trouvee || actif;
+    });
+    return trouvee;
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    majHauteurEntete();
+    window.addEventListener("resize", majHauteurEntete);
+
+    var conteneur = document.querySelector(".selecteur-vue[data-modeles]");
+    var ordre = conteneur ? conteneur.getAttribute("data-modeles").split("|") : [];
+
+    // ── Vues « un modèle » ───────────────────────────────────────────────────
+    var menus = Array.prototype.slice.call(document.querySelectorAll("select.selecteur-modele"));
+    var vues = Array.prototype.slice.call(document.querySelectorAll(".vue-modele"));
+
+    function choisirModele(valeur, memoriser) {
+      if (!activer(vues, "data-vue-modele", valeur)) { return; }
+      menus.forEach(function (menu) { menu.value = valeur; });
+      if (memoriser) {
+        ecrireMemoire(CLE_MODELE, valeur);
+        majUrl({ modele: valeur });
+      }
+    }
+
+    menus.forEach(function (menu) {
+      menu.addEventListener("change", function () { choisirModele(menu.value, true); });
+    });
+
+    if (menus.length) {
+      var initial = parametre("modele") || lireMemoire(CLE_MODELE);
+      if (initial) { choisirModele(initial, false); }
+    }
+
+    // ── Vues « paire de modèles » ────────────────────────────────────────────
+    var menuA = document.querySelector("select.selecteur-paire[data-role='a']");
+    var menuB = document.querySelector("select.selecteur-paire[data-role='b']");
+    var paires = Array.prototype.slice.call(document.querySelectorAll(".vue-paire"));
+    var identiques = document.querySelector(".vue-paire-identique");
+
+    /** Clé d'une paire, normalisée dans l'ordre des modèles de la page. */
+    function cle(a, b) {
+      return ordre.indexOf(a) <= ordre.indexOf(b) ? a + "|" + b : b + "|" + a;
+    }
+
+    function choisirPaire(memoriser) {
+      if (!menuA || !menuB) { return; }
+      var a = menuA.value;
+      var b = menuB.value;
+      var meme = a === b;
+      if (identiques) { identiques.classList.toggle("vue-active", meme); }
+      activer(paires, "data-vue-paire", meme ? "" : cle(a, b));
+      if (memoriser) {
+        ecrireMemoire(CLE_PAIRE, a + "|" + b);
+        majUrl({ a: a, b: b });
+      }
+    }
+
+    if (menuA && menuB) {
+      [menuA, menuB].forEach(function (menu) {
+        menu.addEventListener("change", function () { choisirPaire(true); });
+      });
+      var memoire = (lireMemoire(CLE_PAIRE) || "").split("|");
+      var a0 = parametre("a") || memoire[0];
+      var b0 = parametre("b") || memoire[1];
+      if (a0 && b0 && ordre.indexOf(a0) !== -1 && ordre.indexOf(b0) !== -1) {
+        menuA.value = a0;
+        menuB.value = b0;
+        choisirPaire(false);
+      }
+    }
+  });
+})();
+</script>

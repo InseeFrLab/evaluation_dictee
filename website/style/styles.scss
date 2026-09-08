@@ -111,3 +111,65 @@
 .legende-puces .puce {
   min-width: 0;
 }
+
+/* ── Vues commutables de la page « Résultats » ─────────────────────────────────
+   La page rend une vue par modèle et une vue par paire de modèles ; seule la vue
+   portant `.vue-active` est visible. La classe est posée au rendu (le modèle de
+   référence) puis déplacée par `js/vues-modeles.html` au gré des menus. Masquer
+   en CSS, et non en JavaScript après coup, évite que toutes les vues
+   apparaissent le temps du chargement. */
+
+.vue-modele,
+.vue-paire,
+.vue-paire-identique {
+  display: none;
+}
+
+.vue-modele.vue-active,
+.vue-paire.vue-active,
+.vue-paire-identique.vue-active {
+  display: block;
+}
+
+/* Menu déroulant : collant en haut de la zone de lecture, pour rester
+   accessible pendant le défilement des tableaux et figures. */
+.selecteur-vue {
+  /* Collant sur toute la partie à laquelle il appartient : Quarto imbrique les
+     sous-sections dans la section de niveau 1, donc le menu suit le défilement
+     de « Un modèle à la fois » (resp. de la zone de comparaison) puis se
+     libère. `--hauteur-entete` est mesurée par `js/vues-modeles.html`. */
+  position: sticky;
+  top: var(--hauteur-entete, 0px);
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  margin: 1.2rem 0;
+  padding: 0.7rem 0.9rem;
+  background: #f2f6fa;
+  border: 1px solid #d3dfe9;
+  border-left: 4px solid #1f4e79;
+  border-radius: 4px;
+}
+
+.selecteur-vue label {
+  margin: 0;
+  font-weight: 600;
+  color: #1f4e79;
+}
+
+.selecteur-vue select {
+  padding: 0.25rem 0.5rem;
+  font-family: var(--bs-font-monospace, monospace);
+  font-size: 0.9rem;
+  background: #fff;
+  border: 1px solid #9fb4c7;
+  border-radius: 3px;
+}
+
+.selecteur-aide {
+  font-size: 0.82rem;
+  font-style: italic;
+  color: #5a6b7a;
+}
