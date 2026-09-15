@@ -147,6 +147,36 @@ Changer la variable `RUN_NAME` en tête de notebook suffit pour analyser un autr
 Le **rapport pour la DEPP** se génère depuis la section 9 du notebook 03 :
 `data/processed/rapport_depp_<RUN>.html`, autonome (assets inlinés), prêt à envoyer.
 
+### Comparer des *bras* d'expérience : `scripts/rapport_bras.py`
+
+Un **bras** est une variante de prompt testée contre la référence : chain-of-thought,
+comptage des items, exemples de fautes… Comparer des bras est une question distincte de
+« comment se comporte ce run », et aucun des deux autres supports n'y répond :
+
+| Support | Ce qu'il porte | Ce qu'il ne porte pas |
+|---|---|---|
+| **Langfuse** | chaque run isolément : accord, kappa, sous-détection, biais sur le taux de faute, kappa mots/ponctuation, options actives en tags | l'écart contre une référence, et son intervalle de confiance |
+| **Le site Quarto** | ce qui est **retenu**, pour l'extérieur (DEPP, partenaires) | les expérimentations abandonnées, qui l'encombreraient |
+| **`rapport_bras.py`** | la comparaison des variantes entre elles, en interne | rien de destiné à être publié |
+
+```bash
+uv run scripts/rapport_bras.py                       # tous les bras, tous les modèles
+uv run scripts/rapport_bras.py --modeles qwen3-8-27b # un seul modèle
+uv run scripts/rapport_bras.py --bras référence=dictee_end2end exemples=dictee_end2end_exemples
+```
+
+Le rapport sort dans `data/processed/rapport_bras.html`, autonome et **hors de Git**. Il
+contient quatre sections : l'écart de kappa de chaque bras contre la référence du *même*
+modèle avec son intervalle de confiance ; l'accord et le kappa item par item ; le taux de
+faute attribué aux élèves face à celui mesuré par l'expert ; et la ventilation
+mots/ponctuation. Les runs absents en local sont cherchés sur S3, les copies vierges et
+illisibles écartées (décision D8), et toutes les séries restreintes aux copies communes —
+comparer deux bras sur des corpus différents confondrait l'effet du bras avec celui de la
+composition de l'échantillon.
+
+> **Ce qui doit survivre**, ce sont les chiffres, pas le HTML : ils sont enregistrés à
+> chaque run dans Langfuse. Le rapport, lui, se régénère en une commande.
+
 ---
 
 ## Runs longs : le lanceur `launchers/launch_eval.sh`

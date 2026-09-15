@@ -50,6 +50,7 @@ try:
         referral_curve_with_ci,
     )
     from evaluation_dictee.evaluation.report import (
+        filtrer_evaluables,
         copies_by_disagreement,
         disagreement_decomposition,
         load_predictions,
@@ -662,6 +663,10 @@ def runs_attendus(modeles: list[str] | None = None) -> dict[str, str]:
 #: le même JSONL serait relu sur S3 autant de fois qu'il apparaît dans une vue.
 _CACHE_RUNS: dict[tuple[str, str], Run | None] = {}
 
+#: Copies écartées des métriques par run (motif -> nombre de copies), pour une note
+#: unique en bas de page plutôt qu'une ligne par run.
+_ECARTEES: dict[str, dict[str, int]] = {}
+
 
 def _charger_run(approche: str, base: str, modele: str, manquants: list[str]) -> Run | None:
     """Charge un run (approche × modèle), en mémorisant lectures et échecs.
@@ -693,6 +698,15 @@ def _charger_run(approche: str, base: str, modele: str, manquants: list[str]) ->
         return None
     if df.empty:
         NOTES.append(f"`{nom}` est vide : run omis.")
+        return None
+    # Décision D8 : les copies vierges (auto-codées sans appel modèle) et les items
+    # illisibles (code expert « i ») sortent des métriques. Les inclure surestimait
+    # le kappa d'environ 0,02 sur l'échantillon de 500 copies.
+    df, retirees = filtrer_evaluables(df)
+    if retirees:
+        _ECARTEES[nom] = retirees
+    if df.empty:
+        NOTES.append(f"`{nom}` ne contient aucune copie évaluable : run omis.")
         return None
     _CACHE_RUNS[cle] = Run(
         label=libelle_run(approche, modele),
@@ -743,6 +757,19 @@ def charger_runs(modeles: list[str] | None = None) -> dict[str, Run]:
         NOTES.append(
             "Aucun run n'a pu être chargé. Vérifier `S3_PREDICTIONS_PREFIX` et "
             "l'export (`uv run scripts/export_predictions.py --config …`)."
+        )
+    if _ECARTEES:
+        total = {}
+        for motifs in _ECARTEES.values():
+            for motif, n in motifs.items():
+                total[motif] = max(total.get(motif, 0), n)
+        detail = ", ".join(f"{n} {motif}(s)" for motif, n in sorted(total.items()))
+        NOTES.append(
+            f"Copies écartées des métriques : {detail} (par run). Une copie **vierge** "
+            "est codée « absent » sans appel modèle, et un item **illisible** (code "
+            "expert « i ») n'a reçu aucun jugement auquel comparer le modèle : les "
+            "compter lui imputerait un défaut de numérisation ou d'annotation. Les "
+            "inclure surestimait le kappa d'environ 0,02. Voir la décision D8."
         )
     return runs
 
