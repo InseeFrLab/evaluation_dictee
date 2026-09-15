@@ -71,9 +71,14 @@ GPU. Baselines : TrOCR, PyLaia, PP-OCRv5. Repli si GPU contraint : MiniCPM-V-2.6
 > et est multimodal (texte + image, OCR et reconnaissance d'écriture). C'est le
 > candidat de première intention pour la méthode C : aucun GPU à privatiser,
 > appel via l'API compatible OpenAI. Voir `configs/scoring/dictee_REFERENCE.yaml`.
-> Attention au mode « thinking » de Gemma 4 : si actif, élaguer le bloc de
-> raisonnement avant de parser le JSON (même précaution que `enable_thinking:false`
-> sur Qwen3).
+> Mode « thinking » (raisonnement natif) : l'endpoint llm.lab isole le bloc de
+> raisonnement dans un champ `reasoning_content` distinct de `content`, y compris
+> avec `structured_output` — le JSON reste donc conforme au schéma et il n'y a rien
+> à élaguer. Mesuré le 11/09/2026 : thinking ON par défaut sur `qwen3-6-35b-moe` et
+> `qwen3-8-27b`, OFF sur `gemma4-26b-moe`, absent de `qwen3-vl`. Le raisonnement
+> consomme le MÊME budget que la réponse (prévoir `max_tokens: 16384`), et
+> `gemma4-26b-moe` en mode thinking s'emballe sans jamais rendre de JSON : à
+> réserver aux modèles Qwen3. Voir `configs/scoring/dictee_end2end_thinking.yaml`.
 
 **Exigence transverse — score de confiance par item** : chaque code prédit doit
 s'accompagner d'un score de confiance (log-probs vLLM, champ structuré, auto-cohérence,
@@ -225,6 +230,18 @@ immédiatement** (`flush + fsync`). Effets :
   cause avait été corrigée entre les deux lancements.
 - Pour repartir de zéro, supprimer `<run>_<modele>_predictions.jsonl` (ou changer
   `config.name`).
+
+### Copies écartées des métriques (à vérifier à l'œil)
+
+Une copie **vierge** (densité d'encre sous `data.blank_ink_threshold`) ou **illisible**
+(code expert `i`) est exclue des métriques, conservée dans le JSONL avec un champ
+`exclusion`, et listée dans `<run>_<modele>_copies_ecartees.csv`. L'expert n'ayant rendu
+aucun jugement comparable, les compter imputerait au modèle un défaut d'annotation ou de
+numérisation. Une copie n'est écartée en entier que si elle est majoritairement
+inexploitable ; sinon seuls les items concernés sortent.
+
+**Cette liste est à relire** : une copie peut être déclarée vierge à tort (scan trop
+pâle, seuil mal réglé). Détails et effet mesuré : `docs/decisions.md`, décision D8.
 
 ## 10. Pour un⋅e débutant⋅e
 

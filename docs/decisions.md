@@ -80,3 +80,99 @@ codes, pas des transcriptions).
 - Seuil de « performance satisfaisante » (QWK) différencié par critère.
 - Répartition précise des tâches avec TEKLIA.
 - Validation RGPD du niveau de sécurité SSP Cloud pour des données de mineurs.
+
+---
+
+## D7 — Raisonnement des modèles : ce qui est possible, et à quel prix
+
+**Décision** : le raisonnement est évalué comme un **bras d'expérience séparé**
+(`configs/scoring/dictee_end2end_thinking.yaml`), sous sa forme **native**
+(`model.disable_thinking: false`), sur les modèles Qwen3 uniquement. Le schéma de
+sortie reste identique au bras sans raisonnement, pour que l'écart mesuré soit
+imputable au seul raisonnement.
+
+**Deux mécanismes à ne pas confondre** :
+
+| | Raisonnement natif | Champ « comparaison » (`prompt.chain_of_thought`) |
+|---|---|---|
+| Activation | paramètre du modèle | consigne de prompt + schéma JSON étendu |
+| Sortie structurée | **inchangée** (champ `reasoning_content` séparé) | **modifiée** (un champ de plus par item) |
+| Granularité | la **copie** (un bloc pour les 83 items) | l'**item** |
+| Coût mesuré (83 items) | ~9 700 tokens vs ~4 400 | +28 à +46 % de tokens |
+
+**Mesures du 11/09/2026 sur llm.lab**, qui motivent la décision :
+
+- L'endpoint isole le raisonnement dans `reasoning_content` : le JSON reste conforme
+  au schéma même avec `structured_output`. La mise en garde historique (« le bloc
+  `<think>` casse le JSON ») ne vaut plus.
+- **Aucun réglage d'effort n'existe** : `reasoning_effort` (`low`/`high`) et
+  `thinking_budget` sont acceptés par l'API mais **sans aucun effet** — volumes de
+  raisonnement identiques à l'octet près. C'est binaire, activé ou non.
+- **Aucun raisonnement par item n'est possible** à la granularité d'appel actuelle :
+  une requête = une copie = 83 items. Un raisonnement attribuable à un item doit donc
+  vivre dans la sortie structurée (c'est le rôle du champ « comparaison »), ou exiger
+  83 appels par copie (~288 000 appels sur l'échantillon — hors de portée).
+- Support par modèle : `qwen3-6-35b-moe` et `qwen3-8-27b` (activé par défaut, à couper
+  explicitement), `gemma4-26b-moe` (désactivé par défaut, et **inutilisable** : le
+  raisonnement s'emballe, consomme 16 384 tokens et ne rend aucun JSON),
+  `qwen3-vl` (pas de raisonnement natif).
+
+**Conséquences pour le pipeline** :
+
+- Le raisonnement est stocké dans `<run>_<modele>_reasoning.jsonl`, **une ligne par
+  copie**. Il ne peut pas aller dans le JSONL de prédictions, qui est de niveau item :
+  83 lignes par copie × ~13 000 caractères donneraient plusieurs Go.
+- `max_tokens` doit passer à **16384** : le raisonnement est facturé sur le même budget
+  que la réponse. Une génération tronquée code toute la copie en `?`.
+- Le pipeline journalise désormais les générations tronquées (`finish_reason=length`)
+  et le temps de traitement par copie. Sans ces deux garde-fous, le run CoT de juillet
+  2026 a consommé **43 h pour coder 802 copies en « non transcrite »**, sans qu'aucun
+  message ne signale la cause.
+
+**Reste ouvert** : la forme « champ comparaison » n'est pas abandonnée, mais son
+implémentation actuelle a trois défauts recensés (ordre des clés non garanti par le
+décodage contraint, champ `reason` demandé au prompt mais absent du schéma, perte de
+la comparaison lors d'un ré-alignement). À corriger avant tout run qui l'utiliserait.
+
+---
+
+## D8 — Copies vierges et illisibles : écartées des métriques, jamais perdues
+
+**Décision** : une copie **vierge** (l'élève n'a rien écrit) ou **illisible** (l'expert
+n'a pas pu lire, code `i`) est écartée des métriques de performance, conservée dans le
+JSONL avec un motif d'exclusion, et listée dans un fichier dédié pour vérification
+humaine.
+
+**Raison** : dans les deux cas, l'expert n'a rendu **aucun jugement auquel comparer le
+modèle**. Les compter revient à imputer au modèle un défaut d'annotation ou de
+numérisation. Le cas d'école est `dictee_2015_0204`, codée `i` sur ses 83 items :
+elle ressortait « pire copie du corpus, 0 % d'accord » alors qu'il n'y a aucun
+désaccord de jugement à constater.
+
+**Mécanique** :
+
+- Un item est inévaluable si son code expert est `i` (illisible) ou vide
+  (`reference.est_evaluable`). Une copie est vierge si sa densité d'encre passe sous
+  `data.blank_ink_threshold` (2,5 % par défaut, seul le pré-imprimé marquant la page).
+- Une copie n'est écartée **en entier** que si elle est **majoritairement**
+  inexploitable. En dessous de ce seuil, seuls les items concernés sortent des
+  métriques : quelques mots illisibles ne justifient pas de perdre les 70 autres.
+- Chaque ligne du JSONL porte un champ `exclusion` (`vierge`, `illisible`, ou absent).
+  Toute relecture du fichier — métriques, notebooks, site — applique donc le même
+  filtre, sans le réinventer.
+- Les copies écartées sont listées dans
+  `data/processed/<run>_<modele>_copies_ecartees.csv` (copie, motif, items concernés,
+  items au total). **Cette liste doit être relue à l'œil** : une copie peut être
+  déclarée vierge pour une mauvaise raison — numérisation trop pâle, seuil d'encre mal
+  réglé — auquel cas c'est le seuil qu'il faut corriger, pas la copie qu'il faut
+  oublier.
+
+**Effet mesuré** (500 copies, `comptage_strict` / qwen3-6-35b-moe) : 6 copies vierges
+et 13 items illisibles écartés, soit 511 décisions sur 41 500. Le kappa passe de
+**0,601 à 0,582**. Il BAISSE, et c'est normal : les copies vierges étaient codées
+correctement à 100 % sans aucun appel modèle, et gonflaient donc artificiellement les
+métriques. Ce qu'elles mesuraient, c'est la qualité de l'heuristique d'encre, pas
+celle du modèle.
+
+**Conséquence** : les métriques publiées avant cette correction sont légèrement
+optimistes, d'environ 0,02 de kappa sur cet échantillon.
