@@ -80,6 +80,25 @@ class PromptConfig(BaseModel):
     read_final_state: bool = True  # règle des ratures : lire l'état final
     # Force un champ "comparaison" avant le code (verbalise la différence lue-attendue).
     chain_of_thought: bool = False
+    # Demande au modèle de COMPTER les items effectivement écrits sur la copie (mots +
+    # ponctuation) et de confronter ce total au nombre d'items attendus, AVANT de coder.
+    # Vise le biais principal mesuré : le modèle lit le texte de référence et code
+    # "présent" des mots que l'élève n'a jamais écrits.
+    count_items: bool = False
+    # Fournit au modèle, item par item, les fautes RÉELLEMENT observées par les
+    # correcteurs sur cet item (champs `ex_*` de la grille). 55 items sur 83 en ont.
+    # Vise la cause dominante mesurée : 90 % des fautes manquées sont des items que
+    # le modèle transcrit à l'identique du mot attendu, sans voir la différence.
+    show_error_examples: bool = False
+    # Oblige le nombre d'items codés "0" à coïncider avec le comptage déclaré.
+    # Mesuré : le modèle annonce un décompte puis en code un autre sur 9 copies
+    # sur 50 (qwen3-6) et 10 sur 35 (qwen3-8) — le comptage reste décoratif.
+    # Sans effet si `count_items` est faux (il n'y a alors rien à faire coïncider).
+    enforce_count: bool = False
+    # Vérification de voisinage N-1 / N / N+1 appliquée à CHAQUE item, et non
+    # conditionnée à un manque déclaré : conditionner serait inopérant sur un modèle
+    # qui annonce 83 items sur 49 copies sur 50 alors que 27 en manquent.
+    check_neighbours: bool = False
 
 
 class ExperimentConfig(BaseModel):

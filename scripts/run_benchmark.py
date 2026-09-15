@@ -6,6 +6,7 @@ Usage : uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENC
 from __future__ import annotations
 
 import argparse
+from statistics import median
 
 from langfuse import get_client
 
@@ -89,7 +90,14 @@ def main() -> None:
                     "cohen_kappa": result.metrics.cohen_kappa,
                     "n_items": result.metrics.n_items,
                     "n_blank": len(result.blank_copies),
+                    "n_illegible": len(result.illegible_copies),
+                    "n_items_ecartes": result.n_items_ecartes,
                     "n_non_transcribed": len(result.non_transcribed),
+                    # Coût en temps : c'est la contrepartie à mettre en face du gain de
+                    # performance quand on active une option coûteuse (raisonnement natif).
+                    "median_seconds_per_copy": (
+                        round(median(result.durations), 2) if result.durations else 0.0
+                    ),
                 },
             )
     finally:
@@ -100,10 +108,18 @@ def main() -> None:
     logger.info("Accord brut : %.1f%%", result.metrics.raw_agreement * 100)
     logger.info("Kappa de Cohen : %.3f", result.metrics.cohen_kappa)
     logger.info(
-        "Copies vierges auto-codées « 0 » : %d | copies non transcrites (exclues) : %d",
+        "Copies écartées des métriques : %d vierge(s) + %d illisible(s) = %d item(s) "
+        "exclus | copies non transcrites : %d",
         len(result.blank_copies),
+        len(result.illegible_copies),
+        result.n_items_ecartes,
         len(result.non_transcribed),
     )
+    if result.illegible_copies or result.blank_copies:
+        logger.info(
+            "Ces copies sont à VÉRIFIER À L'ŒIL (numérisation dégradée, seuil d'encre "
+            "mal réglé…) : voir data/processed/<run>_copies_ecartees.csv"
+        )
 
     logger.info("Courbe de renvoi humain :")
     for point in referral_curve(result.y_true, result.y_pred, result.confidences):

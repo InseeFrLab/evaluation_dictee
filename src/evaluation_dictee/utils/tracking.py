@@ -35,7 +35,8 @@ def _run_metadata(config: ExperimentConfig) -> dict[str, str]:
 
     Returns:
         Dictionnaire {modèle, modèle étape 2, approche, méthode, schéma, n_few_shot,
-        corpus} en chaînes. `model_stage2` vaut "-" en end_to_end.
+        corpus, raisonnement, sortie contrainte} en chaînes. `model_stage2` vaut "-"
+        en end_to_end.
     """
     return {
         "model": config.model.name,
@@ -47,6 +48,12 @@ def _run_metadata(config: ExperimentConfig) -> dict[str, str]:
         "scheme": config.grid.scheme,
         "n_few_shot": str(config.prompt.n_few_shot),
         "corpus": config.data.corpus,
+        # Sans ces trois champs, deux runs qui ne diffèrent que par la façon de faire
+        # raisonner le modèle sont indiscernables dans Langfuse — or c'est exactement
+        # la comparaison que l'on cherche à faire.
+        "thinking": "off" if config.model.disable_thinking else "on",
+        "chain_of_thought": str(config.prompt.chain_of_thought).lower(),
+        "structured_output": str(config.model.structured_output).lower(),
     }
 
 
@@ -57,15 +64,18 @@ def _run_tags(config: ExperimentConfig) -> list[str]:
         config: Configuration de l'expérience.
 
     Returns:
-        Liste de tags (méthode, corpus, `scheme:…`, `model:…`, éventuellement
-        `model_stage2:…`, `run:<nom>`).
+        Liste de tags (méthode, corpus, `scheme:…`, `model:…`, `thinking:…`,
+        éventuellement `cot`, `model_stage2:…`, `run:<nom>`).
     """
     tags = [
         config.prompt.method,
         config.data.corpus,
         f"scheme:{config.grid.scheme}",
         f"model:{config.model.name}",
+        f"thinking:{'off' if config.model.disable_thinking else 'on'}",
     ]
+    if config.prompt.chain_of_thought:
+        tags.append("cot")
     # Tag distinct seulement si l'étape 2 utilise un autre modèle : évite un tag
     # redondant sur les runs two_stage mono-modèle, tout en rendant filtrables les
     # runs qui croisent deux modèles.
