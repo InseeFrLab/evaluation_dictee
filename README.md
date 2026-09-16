@@ -169,10 +169,24 @@ Le rapport sort dans `data/processed/rapport_bras.html`, autonome et **hors de G
 contient quatre sections : l'écart de kappa de chaque bras contre la référence du *même*
 modèle avec son intervalle de confiance ; l'accord et le kappa item par item ; le taux de
 faute attribué aux élèves face à celui mesuré par l'expert ; et la ventilation
-mots/ponctuation. Les runs absents en local sont cherchés sur S3, les copies vierges et
-illisibles écartées (décision D8), et toutes les séries restreintes aux copies communes —
-comparer deux bras sur des corpus différents confondrait l'effet du bras avec celui de la
-composition de l'échantillon.
+mots/ponctuation. Les copies vierges et illisibles sont écartées (décision D8), et
+toutes les séries sont restreintes aux copies communes — comparer deux bras sur des
+corpus différents confondrait l'effet du bras avec celui de la composition de
+l'échantillon.
+
+**Où vivent les résultats d'un bras.** Un run absent en local est cherché sur S3, à
+DEUX emplacements : `predictions/` (runs de référence, corpus complet) puis
+`predictions/experimentations/` (bras testés sur un échantillon). Cette séparation
+n'est pas cosmétique : le site liste `predictions/` sans y descendre, donc un bras posé
+dans `experimentations/` n'apparaît **jamais** comme un faux modèle sur le site, par
+construction — sans aucune liste de noms à maintenir. `scripts/export_predictions.py`
+choisit automatiquement la bonne destination, en comparant l'effectif réellement
+présent dans le run au corpus complet (pas `data.limit` du YAML, qui ne reflète pas un
+`--limit` passé en ligne de commande — c'est pourtant ainsi que tous les bras de ce
+projet ont été lancés). **Un run n'alimente donc le site que s'il a été mené sur le
+corpus complet**, peu importe qu'il soit passé par `launchers/launch_eval.sh` ou par
+`run_benchmark.py` directement : c'est la taille du run qui compte, pas la façon dont
+il a été lancé.
 
 > **Ce qui doit survivre**, ce sont les chiffres, pas le HTML : ils sont enregistrés à
 > chaque run dans Langfuse. Le rapport, lui, se régénère en une commande.

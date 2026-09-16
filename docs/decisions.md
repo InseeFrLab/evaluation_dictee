@@ -176,3 +176,46 @@ celle du modèle.
 
 **Conséquence** : les métriques publiées avant cette correction sont légèrement
 optimistes, d'environ 0,02 de kappa sur cet échantillon.
+
+---
+
+## D9 — Un bras n'alimente le site que sur le corpus complet
+
+**Décision** : les bras d'expérience (testés sur un échantillon partiel) sont exportés
+sur S3 dans `predictions/experimentations/`, un sous-dossier que le site ne liste
+jamais. Les runs de référence (corpus complet) restent à la racine de `predictions/`,
+seul dossier que le site lit.
+
+**Raison** : le 15/09/2026, l'export des cinq bras testés dans cette phase (CoT,
+comptage, comptage+, exemples, thinking) avait été fait avec la même convention de
+nommage que les runs de référence, dans le même dossier plat. `modeles_exportes()`
+(`website/_analyse.py`) déduit la liste des modèles affichés du contenu de
+`predictions/` : elle avait donc fait apparaître **13 faux modèles** (`cot_qwen3-6-
+35b-moe`, `comptage_strict_gemma4-26b-moe`…) dans les menus déroulants, avant qu'un
+rendu du site n'ait lieu.
+
+**Corrections successives, et pourquoi la seconde l'a emporté** :
+1. Un filtre par liste de noms connus (`BRAS_EXPERIMENTAUX`) dans `website/
+   _analyse.py`. Fonctionnel, mais à maintenir à la main : un sixième bras oublié dans
+   la liste reproduit le bug à l'identique, et les fichiers restent mélangés dans
+   `predictions/` — trompeur pour quiconque parcourt le bucket à la main (DEPP,
+   TEKLIA), pas seulement pour le rendu du site.
+2. **Un sous-dossier S3** (`predictions/experimentations/`). `_noms_exportes()` fait un
+   `fs.ls()` non récursif sur `predictions/` : un fichier posé dans le sous-dossier est
+   invisible du site *par construction*, sans aucune liste à maintenir. Cette option a
+   été retenue ; la première a été retirée du code.
+
+**Le critère de routage n'est PAS « lancé via `launchers/launch_eval.sh` »**, mais
+« couvre le corpus complet ». `scripts/export_predictions.py` compare l'effectif
+RÉELLEMENT présent dans le fichier de prédictions au nombre de copies du corpus (CSV
+des labels), avec une marge de 10 % pour les copies perdues (échecs API). Ce choix
+délibéré évite un piège : `data.limit` du YAML vaut `null` même pour un run lancé avec
+`--limit 500` en ligne de commande (c'est ainsi que tous les bras de ce projet ont été
+lancés) — s'appuyer sur `data.limit` aurait classé ces runs comme des runs complets, et
+reproduit le bug initial. Le launcher reste le moyen recommandé de mener un run complet
+(fiabilité, checkpointing), mais ce n'est pas ce que le routage vérifie.
+
+**Conséquence pour `scripts/rapport_bras.py`** : `_localiser()` cherche désormais un
+run local, puis à la racine de `predictions/`, puis dans son sous-dossier — sans
+savoir a priori laquelle des deux catégories il cherche, ce n'est pas son rôle de le
+deviner.

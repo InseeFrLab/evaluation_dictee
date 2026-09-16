@@ -50,9 +50,9 @@ try:
         referral_curve_with_ci,
     )
     from evaluation_dictee.evaluation.report import (
-        filtrer_evaluables,
         copies_by_disagreement,
         disagreement_decomposition,
+        filtrer_evaluables,
         load_predictions,
         per_copy_metrics,
         per_item_metrics,
@@ -495,6 +495,12 @@ def _noms_exportes() -> list[str]:
     préfixe fait mettre en cache par s3fs une vue *partielle* du répertoire,
     après quoi les autres fichiers deviennent invisibles — y compris pour
     `load_predictions`, qui échouerait alors sur un fichier bien présent.
+
+    Ce listing est volontairement NON récursif : les bras d'expérience (testés sur un
+    échantillon, cf. `scripts/rapport_bras.py`) sont exportés dans le sous-dossier
+    `predictions/experimentations/` (voir `scripts/export_predictions.py`), invisible
+    d'ici par construction. Un run n'alimente donc le site que s'il a été exporté au
+    niveau racine de `predictions/` — c'est-à-dire mené sur le corpus complet.
 
     Returns:
         Les noms de runs (suffixe de modèle compris, `_predictions.jsonl` ôté),

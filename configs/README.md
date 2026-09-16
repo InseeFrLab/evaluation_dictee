@@ -160,6 +160,12 @@ progresse sur les trois modèles — à confirmer sur 500 copies.
 > **Ne pas activer deux options de raisonnement dans un même run** : l'écart mesuré ne
 > serait plus imputable à l'une ou à l'autre.
 
+**Exporter un bras testé sur un échantillon** (`--limit`) va automatiquement dans
+`predictions/experimentations/` sur S3, jamais dans `predictions/` : c'est ce qui
+empêche un bras d'apparaître comme un faux modèle sur le site (décision D9). Rien à
+faire de spécial, `scripts/export_predictions.py --config ...` s'en charge seul en
+comparant l'effectif du run au corpus complet.
+
 ---
 
 ## Famille 2 — Transcription HTR (`htr/`)

@@ -88,11 +88,13 @@ class Rapport:
 
 
 def _localiser(dossier: Path, prefixe: str, modele: str) -> str | None:
-    """Chemin des prédictions d'un run : d'abord en local, sinon sur S3.
+    """Chemin des prédictions d'un run : local, puis `predictions/`, puis son sous-dossier.
 
-    Les runs de référence sont exportés sur S3 et ne sont pas forcément présents sur
-    la machine qui produit le rapport : sans ce repli, la colonne « écart » resterait
-    vide alors que la donnée existe.
+    Les runs de référence (corpus complet) vivent dans `predictions/` ; les bras
+    d'expérience (échantillon partiel) dans `predictions/experimentations/`, hors de
+    la vue du site (voir `scripts/export_predictions.py`). Ce rapport compare les deux
+    catégories, il doit donc chercher dans les deux, sans savoir a priori laquelle
+    est laquelle — ce n'est pas son rôle de le deviner, seulement de trouver le fichier.
 
     Args:
         dossier: dossier local des prédictions.
@@ -100,7 +102,7 @@ def _localiser(dossier: Path, prefixe: str, modele: str) -> str | None:
         modele: nom du modèle.
 
     Returns:
-        Le chemin local ou l'URI S3, ou None si le run est introuvable.
+        Le chemin local ou l'URI S3, ou None si le run est introuvable nulle part.
     """
     fichier = f"{prefixe}_{modele}_predictions.jsonl"
     local = dossier / fichier
@@ -110,10 +112,14 @@ def _localiser(dossier: Path, prefixe: str, modele: str) -> str | None:
         import fsspec
 
         from evaluation_dictee.config import Secrets
+        from evaluation_dictee.utils.s3_export import EXPERIMENTATIONS_SUBDIR
 
-        uri = f"{Secrets().s3_predictions_prefix.rstrip('/')}/{fichier}"
-        fs, chemin = fsspec.core.url_to_fs(uri)
-        return uri if fs.exists(chemin) else None
+        base = Secrets().s3_predictions_prefix.rstrip("/")
+        for uri in (f"{base}/{fichier}", f"{base}/{EXPERIMENTATIONS_SUBDIR}/{fichier}"):
+            fs, chemin = fsspec.core.url_to_fs(uri)
+            if fs.exists(chemin):
+                return uri
+        return None
     except Exception:  # noqa: BLE001 — S3 indisponible : le run est simplement omis
         return None
 
