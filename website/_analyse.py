@@ -86,22 +86,46 @@ def _liste_env(variable: str, defaut: list[str]) -> list[str]:
 
 
 #: Approches comparées, dans l'ordre d'affichage : libellé → champ `name` du YAML.
+#: Ce sont les deux MÉTHODES du projet (CLAUDE.md §4) — end-to-end une passe vs
+#: two-stage HTR+codage — PAS des variantes de prompt. `modeles_exportes()` déduit
+#: automatiquement la liste des modèles depuis S3 en retirant ces deux préfixes ;
+#: y ajouter une approche de plus déduite d'un nom de fichier a déjà provoqué un
+#: bug (D9 — un run `dictee_end2end_cot_<modele>` lu comme un faux modèle) et un
+#: second, plus subtil (deux préfixes qui se chevauchent : `dictee_end2end` est
+#: aussi un préfixe de `dictee_end2end_comptage_exemples`). Voir `MODELES_PROMUS`
+#: ci-dessous pour publier une variante de prompt sans reproduire ces bugs :
+#: la promotion y est déclarée à la main, jamais déduite d'un nom de fichier.
 APPROCHES: dict[str, str] = {
     "end-to-end": "dictee_end2end",
     "two-stage": "dictee_two_stage",
-    # End-to-end EN UNE ÉTAPE, comme la première — le nom conserve `end2end` pour le
-    # dire — mais avec les deux options de prompt qui ont amélioré le codage sans
-    # dégrader tous les modèles (décision D10, docs/decisions.md) : compter les items
-    # + faire coïncider le codage avec ce comptage + vérifier le voisinage de chaque
-    # item, ET montrer les fautes déjà observées sur chaque item. Voir
-    # `configs/scoring/dictee_end2end_comptage_exemples.yaml`.
-    # ⚠ Résultat mesuré NON UNIFORME entre modèles : nette amélioration sur
-    # qwen3-8-27b (+0,119 de kappa), légère sur qwen3-6-35b-moe (+0,032), mais
-    # DÉGRADATION sur gemma4-26b-moe (-0,020, alors que ce dernier gagnerait avec les
-    # seuls exemples de fautes, +0,027). Publier un modèle sur cette approche est donc
-    # un choix délibéré, PAS un remplacement automatique de l'approche end-to-end de
-    # référence pour ce modèle.
-    "end-to-end (comptage+exemples)": "dictee_end2end_comptage_exemples",
+}
+
+#: Promotion manuelle d'un modèle vers le MEILLEUR prompt end-to-end trouvé pour lui
+#: (décision D10, docs/decisions.md). Le gain n'étant PAS uniforme entre modèles —
+#: qwen3-8-27b et qwen3-6-35b-moe gagnent avec comptage+exemples, gemma4-26b-moe
+#: gagne avec exemples seul, et y perdrait avec comptage+exemples — ce choix reste
+#: manuel : rien n'est déduit automatiquement d'un nom de fichier.
+#:
+#: Clé = nom du modèle. Valeur = nom du run promu (champ `name` de sa config, SANS
+#: le suffixe modèle). Volontairement séparé d'`APPROCHES` : un modèle non promu ne
+#: doit jamais être signalé « incomplet » au seul motif qu'il n'a pas de promotion
+#: (voir `approche_promue`, jamais mêlée à `approches_du_modele`/`MODELES_COMPLETS`).
+#:
+#: Pour publier un modèle ici :
+#:   1. Lancer son run sur le corpus COMPLET (launchers/launch_eval.sh, SANS --limit) ;
+#:   2. Vérifier l'export à la racine de `predictions/` (pas `experimentations/` —
+#:      un run partiel y est automatiquement écarté, voir décision D9) ;
+#:   3. Ajouter la ligne ci-dessous, puis re-render le site.
+MODELES_PROMUS: dict[str, str] = {
+    # "qwen3-8-27b": "dictee_end2end_comptage_exemples",
+    # "qwen3-6-35b-moe": "dictee_end2end_comptage_exemples",
+    # "gemma4-26b-moe": "dictee_end2end_exemples",
+}
+
+#: Libellé affiché pour chaque run promu, par son nom (la valeur de `MODELES_PROMUS`).
+LIBELLES_PROMOTION: dict[str, str] = {
+    "dictee_end2end_comptage_exemples": "end-to-end (comptage+exemples)",
+    "dictee_end2end_exemples": "end-to-end (exemples)",
 }
 
 #: Modèles retenus si la découverte automatique ne trouve rien (S3 injoignable,
@@ -185,8 +209,13 @@ def couleur_run(approche: str, modele: str, modeles: list[str] | None = None) ->
     rang_modele = liste.index(modele) if modele in liste else 0
     nuances = NUANCES_APPROCHE.get(approche)
     if nuances is None:
-        rang_approche = list(APPROCHES).index(approche) if approche in APPROCHES else 0
-        return COULEURS_RUN[(rang_modele * len(APPROCHES) + rang_approche) % len(COULEURS_RUN)]
+        # Les libellés de promotion (LIBELLES_PROMOTION) sont inclus APRÈS ceux
+        # d'APPROCHES : sans ça, une approche promue retomberait sur le rang 0 par
+        # défaut et partagerait la couleur de « end-to-end » pour le même modèle.
+        approches_connues = [*APPROCHES, *LIBELLES_PROMOTION.values()]
+        largeur = len(approches_connues) or 1
+        rang_approche = approches_connues.index(approche) if approche in approches_connues else 0
+        return COULEURS_RUN[(rang_modele * largeur + rang_approche) % len(COULEURS_RUN)]
     return nuances[rang_modele % len(nuances)]
 
 
@@ -556,48 +585,35 @@ def _run_du_modele(base: str, modele: str) -> str | None:
     return candidats[0] if candidats else None
 
 
-def _base_la_plus_specifique(nom: str) -> str | None:
-    """Base d'approche la PLUS LONGUE qui préfixe ce nom de run, ou None si aucune.
-
-    Une base peut être elle-même le préfixe d'une autre : `dictee_end2end` préfixe
-    `dictee_end2end_comptage_exemples` (une approche end-to-end EN UNE ÉTAPE, dont le
-    nom conserve délibérément `end2end` pour le dire). Sans priorité au plus
-    spécifique, un run de cette seconde approche matcherait AUSSI la première, et
-    produirait un modèle fantôme portant le reste du nom (`comptage_exemples_
-    <modele>`) en plus du vrai modèle correctement déduit par la bonne base.
-
-    Args:
-        nom: nom de run exporté (suffixe `_predictions.jsonl` déjà ôté).
-
-    Returns:
-        La base la plus longue de `APPROCHES.values()` telle que `nom` commence par
-        `base + "_"`, ou None si aucune ne correspond.
-    """
-    candidates = [b for b in APPROCHES.values() if nom.startswith(b + "_")]
-    return max(candidates, key=len) if candidates else None
-
-
 def modeles_exportes() -> list[str]:
     """Modèles pour lesquels au moins un run de scoring est exporté, triés.
 
     La liste des modèles affichés par le site est **déduite de S3** : tout run
     exporté apparaît au rendu suivant, sans toucher au code. Le nom du modèle est
-    le suffixe du nom de run (`<base>_<modele>`, cf. `config.run_output_name`), la
-    base retenue étant la plus spécifique (voir `_base_la_plus_specifique`).
+    le suffixe du nom de run (`<base>_<modele>`, cf. `config.run_output_name`).
 
     Le two-stage peut suffixer DEUX modèles (`<base>_<etape1>_<etape2>`) : un
     suffixe dont un autre suffixe est le préfixe est donc ramené à ce préfixe,
     c'est-à-dire au modèle de l'étape 1 — le seul axe de comparaison du site.
 
+    Un fichier promu (ex. `dictee_end2end_comptage_exemples_qwen3-8-27b`) est posé à
+    la racine de `predictions/`, là où ce listing cherche — et son nom COMMENCE par
+    `dictee_end2end_`, comme un run de référence. Sans exclusion explicite, il serait
+    lu comme le modèle fantôme `comptage_exemples_qwen3-8-27b` : chaque base connue de
+    `LIBELLES_PROMOTION` est donc écartée AVANT de chercher un modèle, pour qu'un nom
+    de run réservé à une promotion ne soit jamais confondu avec un modèle inconnu.
+
     Returns:
         Les noms de modèles, par ordre alphabétique. Liste vide si le préfixe est
         injoignable ou ne contient aucun run.
     """
+    bases_promotion = tuple(LIBELLES_PROMOTION)
     suffixes = sorted(
         {
             nom[len(base) + 1 :]
+            for base in APPROCHES.values()
             for nom in _noms_exportes()
-            if (base := _base_la_plus_specifique(nom)) is not None
+            if nom.startswith(base + "_") and not nom.startswith(bases_promotion)
         }
     )
     modeles = [
@@ -617,13 +633,45 @@ MODELES: list[str] = _liste_env("RESULTATS_MODELES", modeles_exportes() or MODEL
 
 
 def approches_du_modele(modele: str) -> list[str]:
-    """Approches réellement exportées pour un modèle, dans l'ordre d'affichage."""
+    """Approches CŒUR réellement exportées pour un modèle (end-to-end / two-stage).
+
+    Ne regarde QUE `APPROCHES`, jamais `MODELES_PROMUS` : c'est cette liste qui pilote
+    le message « comparaison end-to-end vs two-stage incomplète » et la sélection des
+    modèles complets (`MODELES_COMPLETS`). Un modèle non promu sur un prompt bonus
+    n'a AUCUNE raison d'être signalé incomplet pour autant — voir `approche_promue`
+    pour afficher la promotion à part, sans jamais la mélanger à ce calcul.
+    """
     return [approche for approche, base in APPROCHES.items() if _run_du_modele(base, modele)]
 
 
-#: Modèles évalués sur TOUTES les approches : les seuls pour lesquels la
-#: comparaison end-to-end vs two-stage est complète. Ils sont préférés comme
-#: sélection par défaut, pour que la page s'ouvre sur une vue non tronquée.
+def approche_promue(modele: str) -> tuple[str, str] | None:
+    """Libellé et nom du run promu pour ce modèle, si déclaré ET réellement exporté.
+
+    Reste hors d'`APPROCHES`/`approches_du_modele` à dessein (voir leurs docstrings) :
+    la promotion est un bonus par modèle, pas une troisième approche que tout modèle
+    devrait couvrir pour être « complet ».
+
+    Args:
+        modele: nom du modèle.
+
+    Returns:
+        Le couple (libellé affiché, nom du run), ou None si non promu dans
+        `MODELES_PROMUS`, ou promu mais introuvable sur S3 (run pas encore exporté).
+    """
+    base = MODELES_PROMUS.get(modele)
+    if base is None:
+        return None
+    nom = _run_du_modele(base, modele)
+    if nom is None:
+        return None
+    return LIBELLES_PROMOTION.get(base, base), nom
+
+
+#: Modèles évalués sur les DEUX approches cœur (end-to-end + two-stage) : les seuls
+#: pour lesquels cette comparaison est complète. Ils sont préférés comme sélection
+#: par défaut, pour que la page s'ouvre sur une vue non tronquée. Une promotion
+#: (`MODELES_PROMUS`) n'entre PAS dans ce calcul, par construction : voir
+#: `approches_du_modele`.
 MODELES_COMPLETS: list[str] = [
     modele for modele in MODELES if len(approches_du_modele(modele)) == len(APPROCHES)
 ]
@@ -786,6 +834,17 @@ def charger_runs(modeles: list[str] | None = None) -> dict[str, Run]:
             run = _charger_run(approche, base, modele, manquants)
             if run is not None:
                 runs[run.label] = run
+    # Promotions (MODELES_PROMUS) : chargées À PART, jamais mêlées à la boucle
+    # ci-dessus. Un modèle non promu ne doit pas finir dans `manquants` au seul
+    # motif qu'il n'a pas de prompt bonus.
+    for modele in demandes:
+        promotion = approche_promue(modele)
+        if promotion is None:
+            continue
+        libelle, _nom = promotion
+        run = _charger_run(libelle, MODELES_PROMUS[modele], modele, manquants)
+        if run is not None:
+            runs[run.label] = run
     if manquants:
         NOTES.append(
             f"Non exporté(s), donc absent(s) des comparaisons : {', '.join(manquants)}. "
