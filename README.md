@@ -179,14 +179,20 @@ DEUX emplacements : `predictions/` (runs de référence, corpus complet) puis
 `predictions/experimentations/` (bras testés sur un échantillon). Cette séparation
 n'est pas cosmétique : le site liste `predictions/` sans y descendre, donc un bras posé
 dans `experimentations/` n'apparaît **jamais** comme un faux modèle sur le site, par
-construction — sans aucune liste de noms à maintenir. `scripts/export_predictions.py`
-choisit automatiquement la bonne destination, en comparant l'effectif réellement
-présent dans le run au corpus complet (pas `data.limit` du YAML, qui ne reflète pas un
-`--limit` passé en ligne de commande — c'est pourtant ainsi que tous les bras de ce
-projet ont été lancés). **Un run n'alimente donc le site que s'il a été mené sur le
-corpus complet**, peu importe qu'il soit passé par `launchers/launch_eval.sh` ou par
-`run_benchmark.py` directement : c'est la taille du run qui compte, pas la façon dont
-il a été lancé.
+construction. `scripts/export_predictions.py` choisit automatiquement la bonne
+destination, en comparant l'effectif réellement présent dans le run au corpus complet
+(pas `data.limit` du YAML, qui ne reflète pas un `--limit` passé en ligne de commande —
+c'est pourtant ainsi que tous les bras de ce projet ont été lancés). **Un run n'alimente
+donc le site que s'il a été mené sur le corpus complet**, peu importe qu'il soit passé
+par `launchers/launch_eval.sh` ou par `run_benchmark.py` directement : c'est la taille
+du run qui compte, pas la façon dont il a été lancé.
+
+**Publier un bras comme approche du site** (le montrer à côté d'end-to-end / two-stage,
+pour un modèle donné) est en revanche **manuel**, pas automatique : ajouter une ligne
+dans `MODELES_PROMUS` (`website/_analyse.py`), après avoir vérifié que le run complet
+est bien exporté à la racine de `predictions/`. Manuel à dessein — le meilleur prompt
+diffère selon le modèle (décision D10), rien à déduire d'un nom de fichier. Détails et
+exemple : `docs/decisions.md` (D10) et le docstring de `MODELES_PROMUS`.
 
 > **Ce qui doit survivre**, ce sont les chiffres, pas le HTML : ils sont enregistrés à
 > chaque run dans Langfuse. Le rapport, lui, se régénère en une commande.

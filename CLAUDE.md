@@ -243,6 +243,20 @@ inexploitable ; sinon seuls les items concernés sortent.
 **Cette liste est à relire** : une copie peut être déclarée vierge à tort (scan trop
 pâle, seuil mal réglé). Détails et effet mesuré : `docs/decisions.md`, décision D8.
 
+### Bras d'expérience : S3 et publication sur le site
+
+Un bras testé sur un échantillon (chain-of-thought, comptage, exemples de fautes…)
+s'exporte dans `predictions/experimentations/`, jamais dans `predictions/` : c'est ce
+qui l'empêche d'apparaître comme un faux modèle sur le site (décision D9,
+`scripts/export_predictions.py` route automatiquement selon l'effectif réel du run).
+
+Publier un bras comme approche du site (« pousser le meilleur prompt pour un
+modèle ») est **manuel** : lancer le run sur le corpus complet, vérifier l'export à
+la racine de `predictions/`, puis ajouter une ligne dans `MODELES_PROMUS`
+(`website/_analyse.py`). Le gain n'étant pas uniforme entre modèles (décision D10),
+rien n'est déduit automatiquement d'un nom de fichier. Détails : décision D10 et le
+docstring de `MODELES_PROMUS`.
+
 ## 10. Pour un⋅e débutant⋅e
 
 - Commence par lire `README.md`, puis `docs/note_de_cadrage.docx`.
