@@ -219,3 +219,39 @@ reproduit le bug initial. Le launcher reste le moyen recommandé de mener un run
 run local, puis à la racine de `predictions/`, puis dans son sous-dossier — sans
 savoir a priori laquelle des deux catégories il cherche, ce n'est pas son rôle de le
 deviner.
+
+---
+
+## D10 — Combiner comptage+ et exemples : le meilleur résultat du projet, non universel
+
+**Décision** : un nouveau bras (`dictee_end2end_comptage_exemples.yaml`) cumule les
+trois consignes de `comptage+` et la consigne d'`exemples`, les deux seuls bras qui
+avaient amélioré le codage sur au moins un modèle (D7). Testé sur 500 copies, les trois
+modèles.
+
+**Résultat** : sur `qwen3-8-27b`, +0,119 de kappa contre la référence (κ 0,495 →
+0,614) — le meilleur écart mesuré sur l'ensemble du projet, avec un intervalle de
+confiance à 95 % entièrement positif ([+0,103 ; +0,136]). Cet écart est proche de la
+somme des deux effets pris séparément (+0,081 pour exemples, +0,036 pour comptage+),
+ce qui suggère que les deux mécanismes corrigent des erreurs largement indépendantes
+sur ce modèle : `exemples` réduit la sous-détection perceptive, `comptage+` réduit les
+décalages d'alignement.
+
+**Mais la combinaison n'est PAS universellement bonne** :
+- `qwen3-6-35b-moe` : +0,032 ★, à peine plus qu'`exemples` seul (+0,027 ★) — comptage+
+  n'y apportait déjà presque rien seul (+0,006, non significatif).
+- `gemma4-26b-moe` : **−0,020 ★**, alors qu'`exemples` seul est le MEILLEUR bras pour ce
+  modèle (+0,027 ★). Le mécanisme de comptage, nocif pour gemma4 dans toutes ses
+  variantes testées (−0,051 seul, −0,075 avec les garde-fous), annule et inverse le
+  gain d'exemples une fois combiné.
+
+**Conséquence** : il n'existe pas de configuration unique à recommander pour les trois
+modèles. Le choix du bras devient un choix PAR MODÈLE :
+`comptage+exemples` pour `qwen3-8-27b`, `exemples` seul pour `gemma4-26b-moe`, l'un ou
+l'autre pour `qwen3-6-35b-moe` (écart trop faible entre les deux pour trancher).
+
+**Reste ouvert** : cette conversation n'a pas testé le mécanisme complémentaire — que
+donnerait `comptage+` restreint à la seule ponctuation, où il apportait un gain
+sélectif sur `qwen3-8-27b` (section 7 des rapports antérieurs), combiné à `exemples`
+sur les mots ? Non implémenté : `count_items` porte aujourd'hui sur la copie entière,
+pas sur une sous-population d'items.

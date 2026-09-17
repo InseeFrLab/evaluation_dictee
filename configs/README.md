@@ -126,36 +126,49 @@ variantes se créent en copiant la référence et en changeant peu de champs :
 > **Comparaison équitable end-to-end vs two-stage** : garder le *même* modèle des
 > deux côtés isole l'effet de l'architecture (1 vs 2 étapes) de celui du modèle.
 
-### Options de raisonnement : testées, NON retenues
+### Options de raisonnement : ce qui marche, ce qui ne marche pas
 
-Cinq variantes de prompt ont été mesurées sur la dictée 2015, à modèle et corpus
-constants, contre le run de référence du **même** modèle. Elles sont toutes à `false`
-par défaut. Le tableau donne l'écart de kappa mesuré ; ★ signale un intervalle de
-confiance à 95 % (bootstrap par grappes) excluant zéro.
+Six variantes de prompt ont été mesurées sur la dictée 2015, à modèle et corpus
+constants, contre le run de référence du **même** modèle, sur 500 copies (494
+communes aux 18 séries après exclusion des copies vierges/illisibles, décision D8).
+Elles sont toutes à `false` par défaut. Le tableau donne l'écart de kappa mesuré ; ★
+signale un intervalle de confiance à 95 % (bootstrap par grappes) excluant zéro.
 
-| Option | `qwen3-6-35b-moe` | `qwen3-8-27b` | `gemma4-26b-moe` | Copies |
-|---|---|---|---|---|
-| `chain_of_thought` | −0,031 ★ | +0,015 | −0,037 ★ | 500 |
-| `count_items` | −0,015 | +0,030 ★ | −0,051 ★ | 500 |
-| `count_items` + `enforce_count` + `check_neighbours` | +0,006 | +0,033 ★ | −0,075 ★ | 500 |
-| `disable_thinking: false` (raisonnement natif) | inexploitable | non testé | inexploitable | 20 |
-| **`show_error_examples`** | **+0,016** | **+0,079 ★** | **+0,041 ★** | **100** |
+| Option | `qwen3-6-35b-moe` | `qwen3-8-27b` | `gemma4-26b-moe` |
+|---|---|---|---|
+| `chain_of_thought` | −0,034 ★ | +0,017 | −0,038 ★ |
+| `count_items` | −0,016 | +0,033 ★ | −0,051 ★ |
+| `count_items` + `enforce_count` + `check_neighbours` (**comptage+**) | +0,006 | +0,036 ★ | −0,075 ★ |
+| `show_error_examples` (**exemples**) | +0,027 ★ | +0,081 ★ | +0,027 ★ |
+| **comptage+ ET exemples combinés** | **+0,032 ★** | **+0,119 ★** | **−0,020 ★** |
+| `disable_thinking: false` (raisonnement natif, 20 copies) | inexploitable | non testé | inexploitable |
 
-**Ce qu'il faut en retenir.** Aucune des quatre premières n'améliore le codage de façon
-générale : le meilleur modèle reste `qwen3-6-35b-moe` **sans aucune option**. Le
-raisonnement natif est inexploitable en end-to-end (45 % de copies perdues par
-troncature, ~61 h projetées contre ~5 h). Le vote majoritaire entre les trois modèles
-ne dépasse pas non plus le meilleur modèle isolé.
+**Pourquoi la CoT, le comptage seul et le raisonnement natif échouent.** L'analyse des
+copies les plus mal codées a montré que **90 % des fautes manquées sont des items que
+le modèle transcrit à l'identique du mot attendu** : il ne voit pas la différence. Le
+goulot est perceptif, pas logique — or ces options agissent sur le raisonnement.
+Recoder mécaniquement à partir de la transcription du modèle donne d'ailleurs un kappa
+PIRE que son propre codage (0,554 contre 0,603) : son jugement est bon, c'est sa
+lecture qui bloque. Le raisonnement natif est en outre inexploitable en end-to-end
+(45 % de copies perdues par troncature, ~61 h projetées contre ~5 h). Le vote
+majoritaire entre les trois modèles ne dépasse pas non plus le meilleur modèle isolé.
 
-**Pourquoi elles échouent.** L'analyse des copies les plus mal codées a montré que
-**90 % des fautes manquées sont des items que le modèle transcrit à l'identique du mot
-attendu** : il ne voit pas la différence. Le goulot est perceptif, pas logique — or ces
-options agissent toutes sur le raisonnement. Recoder mécaniquement à partir de la
-transcription du modèle donne d'ailleurs un kappa PIRE que son propre codage (0,554
-contre 0,603) : son jugement est bon, c'est sa lecture qui bloque.
+**`show_error_examples` vise directement la lecture** (les fautes déjà observées sur
+chaque item), et c'est la seule option qui améliore les trois modèles pris
+individuellement.
 
-`show_error_examples` est la seule option qui vise la lecture, et la seule qui
-progresse sur les trois modèles — à confirmer sur 500 copies.
+**La combiner à comptage+ donne le meilleur résultat de tout le projet, sur
+`qwen3-8-27b`** : +0,119 de kappa (0,495 → 0,614), proche de la somme des deux effets
+pris séparément (+0,081 et +0,036) — signe que les deux mécanismes corrigent des
+erreurs largement indépendantes chez ce modèle. Sur `qwen3-6-35b-moe`, la combinaison
+n'ajoute qu'un peu à `exemples` seul (+0,032 contre +0,027). **Sur `gemma4-26b-moe`,
+la combinaison est nettement DÉFAVORABLE** (−0,020) alors qu'`exemples` seul est le
+meilleur bras pour ce modèle (+0,027) : le mécanisme de comptage, nocif pour `gemma4`
+dans tous ses bras, annule et inverse le gain d'`exemples` une fois combiné.
+
+**Aucun bras n'est donc universellement bon** : `comptage+exemples` pour
+`qwen3-8-27b`, `exemples` seul pour `gemma4-26b-moe`, et un choix moins tranché pour
+`qwen3-6-35b-moe` où les deux se valent à peu près.
 
 > **Ne pas activer deux options de raisonnement dans un même run** : l'écart mesuré ne
 > serait plus imputable à l'une ou à l'autre.

@@ -37,6 +37,10 @@ BRAS_PAR_DEFAUT: dict[str, str] = {
     "comptage": "dictee_end2end_comptage",
     "comptage+": "dictee_end2end_comptage_strict",
     "exemples": "dictee_end2end_exemples",
+    # Combine les deux SEULS bras qui ont amélioré le codage sur au moins un modèle
+    # (comptage+ : décalages d'alignement ; exemples : sous-détection perceptive).
+    # Voir configs/scoring/dictee_end2end_comptage_exemples.yaml pour l'hypothèse.
+    "comptage+exemples": "dictee_end2end_comptage_exemples",
 }
 
 #: Slots 1 à 3 de la palette catégorielle : les seuls qui passent le contrôle « toutes
@@ -46,7 +50,7 @@ COULEURS_MODELES: list[str] = ["#2a78d6", "#eb6834", "#1baf7a"]
 
 #: La FORME porte le bras, la COULEUR le modèle : douze séries distinctes par la seule
 #: couleur ne seraient ni lisibles ni sûres pour les daltonismes.
-FORMES = ["cercle", "carre", "triangle", "losange", "croix"]
+FORMES = ["cercle", "carre", "triangle", "losange", "croix", "anneau"]
 
 _MARGE_G, _MARGE_D, _MARGE_H, _MARGE_B = 200, 24, 54, 34
 _LARGEUR_TRACE = 620
@@ -393,6 +397,14 @@ def _marqueur(forme: str, x: float, y: float, couleur: str, titre: str) -> str:
             ]
         )
         return f'<polygon points="{pts}" {fin}</polygon>'
+    if forme == "anneau":
+        # Cercle évidé (contour seul) : distinct du disque plein de "cercle" même à
+        # petite taille, sans ajouter une forme géométrique de plus à reconnaître.
+        return (
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r * 0.8:.1f}" fill="none" '
+            f'stroke="{couleur}" stroke-width="2.2" opacity="0.9">'
+            f"<title>{html.escape(titre)}</title></circle>"
+        )
     c = r * 1.12
     pts = f"{x:.1f},{y - c:.1f} {x + c:.1f},{y:.1f} {x:.1f},{y + c:.1f} {x - c:.1f},{y:.1f}"
     return f'<polygon points="{pts}" {fin}</polygon>'
