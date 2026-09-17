@@ -89,6 +89,19 @@ def _liste_env(variable: str, defaut: list[str]) -> list[str]:
 APPROCHES: dict[str, str] = {
     "end-to-end": "dictee_end2end",
     "two-stage": "dictee_two_stage",
+    # End-to-end EN UNE ÉTAPE, comme la première — le nom conserve `end2end` pour le
+    # dire — mais avec les deux options de prompt qui ont amélioré le codage sans
+    # dégrader tous les modèles (décision D10, docs/decisions.md) : compter les items
+    # + faire coïncider le codage avec ce comptage + vérifier le voisinage de chaque
+    # item, ET montrer les fautes déjà observées sur chaque item. Voir
+    # `configs/scoring/dictee_end2end_comptage_exemples.yaml`.
+    # ⚠ Résultat mesuré NON UNIFORME entre modèles : nette amélioration sur
+    # qwen3-8-27b (+0,119 de kappa), légère sur qwen3-6-35b-moe (+0,032), mais
+    # DÉGRADATION sur gemma4-26b-moe (-0,020, alors que ce dernier gagnerait avec les
+    # seuls exemples de fautes, +0,027). Publier un modèle sur cette approche est donc
+    # un choix délibéré, PAS un remplacement automatique de l'approche end-to-end de
+    # référence pour ce modèle.
+    "end-to-end (comptage+exemples)": "dictee_end2end_comptage_exemples",
 }
 
 #: Modèles retenus si la découverte automatique ne trouve rien (S3 injoignable,
@@ -543,12 +556,34 @@ def _run_du_modele(base: str, modele: str) -> str | None:
     return candidats[0] if candidats else None
 
 
+def _base_la_plus_specifique(nom: str) -> str | None:
+    """Base d'approche la PLUS LONGUE qui préfixe ce nom de run, ou None si aucune.
+
+    Une base peut être elle-même le préfixe d'une autre : `dictee_end2end` préfixe
+    `dictee_end2end_comptage_exemples` (une approche end-to-end EN UNE ÉTAPE, dont le
+    nom conserve délibérément `end2end` pour le dire). Sans priorité au plus
+    spécifique, un run de cette seconde approche matcherait AUSSI la première, et
+    produirait un modèle fantôme portant le reste du nom (`comptage_exemples_
+    <modele>`) en plus du vrai modèle correctement déduit par la bonne base.
+
+    Args:
+        nom: nom de run exporté (suffixe `_predictions.jsonl` déjà ôté).
+
+    Returns:
+        La base la plus longue de `APPROCHES.values()` telle que `nom` commence par
+        `base + "_"`, ou None si aucune ne correspond.
+    """
+    candidates = [b for b in APPROCHES.values() if nom.startswith(b + "_")]
+    return max(candidates, key=len) if candidates else None
+
+
 def modeles_exportes() -> list[str]:
     """Modèles pour lesquels au moins un run de scoring est exporté, triés.
 
     La liste des modèles affichés par le site est **déduite de S3** : tout run
     exporté apparaît au rendu suivant, sans toucher au code. Le nom du modèle est
-    le suffixe du nom de run (`<base>_<modele>`, cf. `config.run_output_name`).
+    le suffixe du nom de run (`<base>_<modele>`, cf. `config.run_output_name`), la
+    base retenue étant la plus spécifique (voir `_base_la_plus_specifique`).
 
     Le two-stage peut suffixer DEUX modèles (`<base>_<etape1>_<etape2>`) : un
     suffixe dont un autre suffixe est le préfixe est donc ramené à ce préfixe,
@@ -561,9 +596,8 @@ def modeles_exportes() -> list[str]:
     suffixes = sorted(
         {
             nom[len(base) + 1 :]
-            for base in APPROCHES.values()
             for nom in _noms_exportes()
-            if nom.startswith(base + "_")
+            if (base := _base_la_plus_specifique(nom)) is not None
         }
     )
     modeles = [
