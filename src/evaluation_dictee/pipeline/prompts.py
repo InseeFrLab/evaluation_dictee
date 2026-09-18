@@ -7,6 +7,7 @@ Chaque prompt est un template chat versionné dans Langfuse, avec repli local si
 
 from __future__ import annotations
 
+import json
 from typing import cast
 
 from langfuse import get_client
@@ -89,11 +90,6 @@ _CONSIGNE_RATURES = (
     "(corrigée par l'élève), pas la version barrée.\n"
 )
 
-_CONSIGNE_CONFIANCE = (
-    "7 - Pour chaque item, fournis un score de confiance entre 0 et 1 reflétant ta "
-    "certitude (lisibilité, ambiguïté). Un score bas déclenchera une relecture humaine.\n"
-)
-
 # TROIS branches obligatoires, dont l'absence. Avec seulement « identique » ou
 # « décris la différence », un item que l'élève n'a pas écrit n'avait aucune issue :
 # le modèle recopiait le mot ATTENDU et le déclarait identique (mesuré le 11/09/2026 :
@@ -162,29 +158,14 @@ _CONSIGNE_VOISINAGE = (
     "d'erreur en chaîne, et la vérification de voisinage est ce qui la rattrape.\n"
 )
 
-# Format de sortie JSON de la méthode C, avec ou sans champ « comparaison » (CoT).
-# L'ORDRE DES CLÉS EST LA CONSIGNE : « comparaison » doit être écrite avant « code ».
-# Le champ « reason » a été retiré : il était demandé ici mais absent du schéma JSON,
-# donc impossible à produire sous décodage contraint, et de toute façon placé après le
-# code — une justification, pas un raisonnement. (Il reste dans _FORMAT_ITEMS_SIMPLE,
-# qu'on ne touche pas : modifier le prompt des runs sans CoT casserait la
-# comparabilité avec les résultats déjà publiés.)
-_FORMAT_ITEMS_COT = (
-    "Réponds UNIQUEMENT par un objet JSON, sans texte autour ni de notes, de la forme :\n"
-    '{"items": [{"item_id": "...", "transcription": "ce que l\'élève a écrit", '
-    '"comparaison": "identique" OU description brève de la différence OU "absent", '
-    '"code": "1", "confidence": 0.95}, ...]}.\n'
-    "RESPECTE CET ORDRE DE CLÉS : « comparaison » vient AVANT « code ». Tu dois avoir "
-    "écrit la différence avant de choisir le code, sinon tu ne fais que justifier une "
-    "décision déjà prise.\n"
-    "Tout ajout de texte hors de la structure du JSON sera pris comme une erreur par le pipeline."
-)
-_FORMAT_ITEMS_SIMPLE = (
-    "Réponds UNIQUEMENT par un objet JSON, sans texte autour ni de notes, de la forme :\n"
-    '{"items": [{"item_id": "...", "transcription": "ce que l\'élève a écrit", '
-    '"code": "1", "confidence": 0.95, "reason": "les raisons du choix"}, ...]}.\n'
-    "Tout ajout de texte hors de la structure du JSON sera pris comme une erreur par le pipeline."
-)
+# Format de sortie JSON de la méthode C : UN SEUL exemple, construit dynamiquement
+# par `_format_sortie` selon les options actives. Avant, chaque combinaison avait son
+# texte tapé à la main : count_items concaténait un rappel devant un bloc déjà complet,
+# produisant deux « Réponds UNIQUEMENT... » successifs avec deux exemples divergents
+# (le second oubliait `n_items_lus`). Un seul dict Python, sérialisé une fois, ne peut
+# plus diverger de lui-même — et il ne contient plus de champ absent du schéma
+# (l'ancien `reason`, jamais dans `_items_json_schema`, ni de score de confiance
+# auto-déclaré, jugé peu fiable et retiré : voir docs/decisions.md).
 
 # Consigne « ratures » propre à l'étape de transcription (formulation dédiée).
 _CONSIGNE_RATURES_TRANSCRIPTION = (
@@ -218,7 +199,6 @@ _TEMPLATE_DICTATION: list[ChatMessageDict] = [
             "{{grille}}\n"
             + _CONSIGNE_ALIGNEMENT
             + "{{consignes_optionnelles}}\n\n"
-            + _CONSIGNE_CONFIANCE
             + "{{consigne_cot}}\n\n"
             + _CONSIGNE_RATURES_DICTATION
         ),
@@ -294,7 +274,7 @@ _TEMPLATE_TEXT_CODING: list[ChatMessageDict] = [
             "Tu dois rendre EXACTEMENT {{n_items}} items, dans cet ordre.\n"
             "Réponds UNIQUEMENT par un objet JSON, sans texte autour, de la forme :\n"
             '{"items": [{"item_id": "...", "transcription": "mot lu pour cet item", '
-            '"code": "1", "confidence": 0.95}, ...]}'
+            '"code": "1"}, ...]}'
         ),
     },
 ]
@@ -308,26 +288,51 @@ PROMPT_TEMPLATES: dict[str, list[ChatMessageDict]] = {
 
 
 def _format_sortie(chain_of_thought: bool, count_items: bool) -> str:
-    """Bloc « format de sortie » du prompt, selon les options actives.
+    """Bloc « format de sortie » du prompt : UN SEUL exemple JSON, cohérent.
+
+    Construit un unique dict Python puis le sérialise une fois, plutôt que de coller
+    des morceaux de texte pré-écrits par option : sans quoi deux options combinées
+    produisaient deux blocs « Réponds UNIQUEMENT... » successifs, avec deux exemples
+    divergents (le second oubliait le champ ajouté par le premier). Un seul objet ne
+    peut plus se contredire lui-même, et son ordre de clés reflète exactement
+    `_items_json_schema` (dict Python = ordre d'insertion = ordre JSON).
 
     Args:
-        chain_of_thought: ajoute le champ « comparaison » par item.
+        chain_of_thought: ajoute le champ « comparaison » par item, avant « code ».
         count_items: ajoute le champ « n_items_lus » en tête de réponse.
 
     Returns:
         Le texte décrivant le JSON attendu.
     """
-    base = _FORMAT_ITEMS_COT if chain_of_thought else _FORMAT_ITEMS_SIMPLE
-    if not count_items:
-        return base
-    # Le comptage est annoncé AVANT la liste d'items : c'est l'ordre qu'on veut voir
-    # généré, puisqu'il doit contraindre le codage et non le commenter.
-    return (
-        "Réponds UNIQUEMENT par un objet JSON, sans texte autour ni de notes, de la forme :\n"
-        '{"n_items_lus": <nombre entier d\'items que tu as VUS sur la copie>, '
-        '"items": [...]}.\n'
-        "« n_items_lus » vient EN PREMIER, avant la liste des items.\n" + base
+    item: dict[str, str] = {"item_id": "...", "transcription": "ce que l'élève a écrit"}
+    if chain_of_thought:
+        item["comparaison"] = 'identique OU description brève de la différence OU "absent"'
+    item["code"] = "1"
+
+    racine: dict[str, object] = {}
+    if count_items:
+        racine["n_items_lus"] = "<nombre entier d'items que tu as VUS sur la copie>"
+    racine["items"] = [item]
+
+    consignes = [
+        "Réponds UNIQUEMENT par un objet JSON, sans texte autour ni de notes, de la forme :",
+        json.dumps(racine, ensure_ascii=False) + ".",
+    ]
+    if count_items:
+        # Rappelé en clair : l'ordre dans l'exemple JSON seul ne suffit pas toujours à
+        # faire respecter l'ordre de génération réel (mesuré).
+        consignes.append("« n_items_lus » vient EN PREMIER, avant la liste des items.")
+    if chain_of_thought:
+        consignes.append(
+            "RESPECTE CET ORDRE DE CLÉS : « comparaison » vient AVANT « code ». Tu dois "
+            "avoir écrit la différence avant de choisir le code, sinon tu ne fais que "
+            "justifier une décision déjà prise."
+        )
+    consignes.append(
+        "Tout ajout de texte hors de la structure du JSON sera pris comme une erreur "
+        "par le pipeline."
     )
+    return "\n".join(consignes)
 
 
 def _fautes_connues(item: GridItem, scheme: str) -> str:

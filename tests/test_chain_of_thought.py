@@ -48,9 +48,9 @@ def test_schema_declare_comparaison_avant_code() -> None:
 
 
 def test_schema_sans_cot_inchange() -> None:
-    """Sans CoT, le schéma reste exactement celui des runs déjà publiés."""
+    """Sans CoT, seul le champ `comparaison` diffère (retiré : `confidence`, voir D)."""
     props = _items_json_schema(chain_of_thought=False)["properties"]["items"]["items"]["properties"]
-    assert list(props) == ["item_id", "transcription", "code", "confidence"]
+    assert list(props) == ["item_id", "transcription", "code"]
 
 
 def test_ordre_reel_detecte() -> None:

@@ -255,3 +255,39 @@ donnerait `comptage+` restreint à la seule ponctuation, où il apportait un gai
 sélectif sur `qwen3-8-27b` (section 7 des rapports antérieurs), combiné à `exemples`
 sur les mots ? Non implémenté : `count_items` porte aujourd'hui sur la copie entière,
 pas sur une sous-population d'items.
+
+---
+
+## D11 — Retrait du score de confiance auto-déclaré (D4 non abandonnée, suspendue)
+
+**Décision** : le modèle n'a plus à écrire lui-même `"confidence": 0.95` dans sa
+réponse — le champ est retiré du prompt et du schéma JSON contraint, sur les deux
+méthodes (end-to-end et étape 2 du two-stage).
+
+**Ce que ça ne change PAS** : l'exigence DEPP de D4 (§4 de CLAUDE.md) reste valide —
+un signal de confiance par item reste nécessaire pour la courbe « taux de renvoi
+humain vs erreur résiduelle ». L'infrastructure reste en place
+(`ItemPrediction.confidence`, `evaluation/calibration.py` : `referral_curve`,
+`expected_calibration_error`...) : elle affichera simplement `None`/vide tant
+qu'aucun signal ne l'alimente. Ce n'est PAS un renoncement au livrable, c'est le
+retrait d'UNE source de confiance (l'auto-déclaration), jugée peu fiable —
+CLAUDE.md §4 en cite explicitement trois autres : log-probs vLLM, auto-cohérence,
+désaccord inter-modèles.
+
+**Raison** : demandé un score de confiance à un LLM dans son propre JSON est un
+signal connu pour être mal calibré (sur-confiance quasi systématique), sans qu'aucune
+mesure de calibration n'ait jamais été faite dans ce projet pour le confirmer ou
+l'infirmer — le champ était présent depuis le début sans que sa qualité soit vérifiée.
+Plutôt que de le garder par défaut, on le retire et on repart d'une page blanche pour
+la prochaine tentative de signal de confiance.
+
+**Effet de bord accepté** : ça change le prompt de RÉFÉRENCE lui-même (pas seulement
+les bras d'expérience), donc tout nouveau run de référence n'aura plus un texte
+strictement identique aux runs déjà publiés. Sans effet sur les codes/kappa mesurés :
+la consigne retirée ne portait que sur un champ annexe.
+
+**Reste à faire** (hors périmètre de cette décision) : brancher un vrai signal de
+confiance avant que la courbe de renvoi humain ne soit à nouveau produite. La piste la
+plus alignée avec le schéma actuel : `logprobs=True` sur l'appel API, probabilité du
+token de code effectivement choisi — `model.request_logprobs` existe déjà dans la
+config mais n'est câblé nulle part (vérifié le 18/09/2026).

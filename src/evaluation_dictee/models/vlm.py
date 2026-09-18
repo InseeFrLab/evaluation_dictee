@@ -139,7 +139,6 @@ def _items_json_schema(chain_of_thought: bool, count_items: bool = False) -> dic
     if chain_of_thought:
         properties["comparaison"] = {"type": "string"}
     properties["code"] = {"type": "string"}
-    properties["confidence"] = {"type": "number"}
     required = list(properties)
     liste_items = {
         "items": {
