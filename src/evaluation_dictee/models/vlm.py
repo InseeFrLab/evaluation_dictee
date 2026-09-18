@@ -310,6 +310,41 @@ class VLMScorer(Scorer):
             len(renseignes),
         )
 
+    def _alerter_si_comptage_incoherent(
+        self, copy: Copy, items: list[ItemPrediction], n_items_lus: int | None
+    ) -> None:
+        """Signale un comptage annoncé puis contredit par le codage effectif (E2).
+
+        Garde-fou EN TEMPS RÉEL, sur le même principe que
+        `_alerter_si_cot_decorative` : la consigne `enforce_count` demande au modèle
+        de faire coïncider son nombre de codes « 0 » avec `n_items_attendus -
+        n_items_lus`, mais rien ne vérifiait jusqu'ici si c'est réellement le cas
+        pendant le run — seulement après coup, en rejouant le JSONL. Actif dès que
+        `count_items` est vrai, quel que soit le bras (pas de flag dédié).
+
+        Args:
+            copy: Copie évaluée.
+            items: Prédictions finales de la copie (après ré-alignement éventuel).
+            n_items_lus: Comptage déclaré par le modèle, ou None s'il ne l'a pas fourni.
+        """
+        if not self.prompt_config.count_items or n_items_lus is None:
+            return
+        attendu = len(copy.item_ids) - n_items_lus
+        reel = sum(1 for it in items if it.code == "0")
+        if attendu == reel:
+            return
+        logger.warning(
+            "Comptage INCOHÉRENT sur %s : le modèle annonce n_items_lus=%d (donc %d "
+            "item(s) absent(s) attendus sur %d), mais en code réellement %d. Le "
+            "comptage déclaré ne contraint pas son codage — voir décision D11/E2, "
+            "docs/decisions.md.",
+            copy.copy_id,
+            n_items_lus,
+            attendu,
+            len(copy.item_ids),
+            reel,
+        )
+
     def _parse_response(self, copy: Copy, content: str) -> CopyPrediction:
         """Parse la réponse JSON en prédictions par item, avec ré-alignement si décalage détecté.
 
@@ -372,6 +407,7 @@ class VLMScorer(Scorer):
                 )
                 for item_id, a in zip(copy.item_ids, aligned, strict=False)
             ]
+            self._alerter_si_comptage_incoherent(copy, items, n_items_lus)
             return CopyPrediction(copy_id=copy.copy_id, items=items, n_items_lus=n_items_lus)
 
         by_id = {it.get("item_id"): it for it in raw_items}
@@ -391,4 +427,5 @@ class VLMScorer(Scorer):
                         comparaison_avant_code=comparaison_avant_code(entry),
                     )
                 )
+        self._alerter_si_comptage_incoherent(copy, items, n_items_lus)
         return CopyPrediction(copy_id=copy.copy_id, items=items, n_items_lus=n_items_lus)

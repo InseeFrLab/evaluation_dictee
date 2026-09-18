@@ -99,6 +99,19 @@ class PromptConfig(BaseModel):
     # conditionnée à un manque déclaré : conditionner serait inopérant sur un modèle
     # qui annonce 83 items sur 49 copies sur 50 alors que 27 en manquent.
     check_neighbours: bool = False
+    # Expérimentation 1 : ne montre PAS le texte de référence en phrase continue —
+    # seulement la liste d'items isolés (déjà affichée par ailleurs). Vise la tension
+    # structurelle identifiée le 18/09/2026 : une phrase familière invite à la lecture
+    # fluide par reconnaissance plutôt qu'à l'examen lettre à lettre de l'image, ce qui
+    # va dans le sens du biais dominant mesuré (sous-détection des fautes).
+    reference_items_only: bool = False
+    # Expérimentation 3 : pour un item ponctuation, vérifie D'ABORD qu'un signe existe
+    # avant d'en juger la nature. Vise le mécanisme distinct de la ponctuation (omission
+    # plutôt que faute), documenté au rapport de bras section 7 (mots vs ponctuation).
+    check_punctuation_presence: bool = False
+    # Expérimentation 4 : présente le mot ATTENDU en contraste des fautes connues,
+    # plutôt que les fautes seules. Sans effet si show_error_examples est faux.
+    contrastive_examples: bool = False
 
 
 class ExperimentConfig(BaseModel):

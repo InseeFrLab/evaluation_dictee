@@ -1,0 +1,70 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — EXPÉRIMENTATION 1 : texte de référence en items isolés
+# ═══════════════════════════════════════════════════════════════════════════
+#  Base : comptage+ (count_items + enforce_count + check_neighbours) + exemples
+#  (show_error_examples), les deux seuls bras qui ont amélioré le codage sur au
+#  moins un modèle (décision D10). S'y ajoute :
+#
+#    reference_items_only : le texte de référence n'est PLUS donné en phrase
+#    continue. Il reste entièrement présent, mais UNIQUEMENT dans la liste
+#    d'items (un mot isolé par ligne).
+#
+#  Hypothèse testée (analyse du 18/09/2026, point B) : donner le texte de
+#  référence en phrase lisible est en tension directe avec le biais dominant
+#  mesuré (90 % des fautes manquées sont des items que le modèle transcrit à
+#  l'identique du mot attendu) — une phrase familière invite à la reconnaître
+#  par lecture fluide plutôt qu'à examiner l'image lettre à lettre. Aucun bras
+#  testé jusqu'ici n'avait touché à CETTE présentation, seulement ajouté des
+#  consignes autour.
+#
+#  Risque à surveiller : sans la phrase continue, le modèle a-t-il plus de mal
+#  à situer un item dans son contexte de phrase (accords, homophones qui se
+#  distinguent par le sens) ? À lire dans le taux d'erreur par item et le
+#  biais sur le taux de faute (rapport_bras.py, sections 2 et 3).
+#
+#  Lancer (smoke-test recommandé avant 500 copies) :
+#    uv run scripts/run_benchmark.py \
+#      --config configs/scoring/dictee_end2end_e1_reference_isolee.yaml \
+#      --limit 10 --model-name <modele>
+#  Sortie : data/processed/dictee_end2end_e1_reference_isolee_<modele>_predictions.jsonl
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: dictee_end2end_e1_reference_isolee
+seed: 42
+concurrency: 12
+
+approach: end_to_end
+
+model:
+  name: qwen3-6-35b-moe
+  kind: vlm
+  temperature: 0.0
+  max_tokens: 16384
+  request_logprobs: true
+  max_retries: 2
+  disable_thinking: true
+  structured_output: true
+
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: C
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  chain_of_thought: false
+  # ← innovations conservées (comptage+ et exemples)
+  count_items: true
+  enforce_count: true
+  check_neighbours: true
+  show_error_examples: true
+  # ← LE paramètre de cette expérimentation
+  reference_items_only: true

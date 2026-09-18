@@ -124,6 +124,19 @@ _CONSIGNE_EXEMPLES = (
     "Tu transcris ce que tu VOIS, pas ce qui est probable.\n"
 )
 
+# Expérimentation 3 (18/09/2026) : cible le mécanisme distinct de la ponctuation —
+# elle se rate par OMISSION plutôt que par faute sur la plupart des modèles (section 7
+# des rapports de bras), contrairement aux mots. Aucune règle n'était jusqu'ici propre
+# à ce cas ; la méthode de codage générale (règle 4, "compare lettre à lettre") est
+# pensée pour des mots, pas pour vérifier qu'un signe existe.
+_CONSIGNE_PONCTUATION = (
+    "13 - CAS PARTICULIER DE LA PONCTUATION : pour un item ponctuation, commence "
+    "TOUJOURS par vérifier qu'un signe est réellement écrit à cet endroit précis de "
+    "la copie, AVANT de juger s'il est du bon type. Un signe absent se code « 0 » "
+    "(absent), jamais « 9 » (erreur) — « 9 » suppose qu'un signe existe mais que ce "
+    "n'est pas le bon (un point à la place d'une virgule, par exemple).\n"
+)
+
 _CONSIGNE_COMPTAGE = (
     "9 - COMMENCE PAR COMPTER. Avant de coder quoi que ce soit, parcours l'image et "
     "compte combien d'items l'élève a RÉELLEMENT écrits : chaque mot écrit compte pour "
@@ -206,8 +219,7 @@ _TEMPLATE_DICTATION: list[ChatMessageDict] = [
     {
         "role": "user",
         "content": (
-            "# Texte de référence (ce que l'élève devait écrire) :\n"
-            "« {{reference_text}} »\n\n"
+            "{{bloc_reference}}"
             "# Items à coder, dans l'ordre. Chaque ligne = un item fixe "
             "« identifiant → mot attendu » :\n"
             "{{items_list}}\n\n"
@@ -216,6 +228,23 @@ _TEMPLATE_DICTATION: list[ChatMessageDict] = [
         ),
     },
 ]
+
+# Bloc "texte de référence" par défaut : la phrase continue, entre guillemets.
+_BLOC_REFERENCE_PHRASE = (
+    "# Texte de référence (ce que l'élève devait écrire) :\n« {reference_text} »\n\n"
+)
+
+# Expérimentation 1 (18/09/2026) : PAS de phrase continue. Vise la tension identifiée
+# entre donner le texte de référence et le biais dominant mesuré (sous-détection) :
+# une phrase familière invite à la reconnaître par lecture fluide plutôt qu'à examiner
+# l'image lettre à lettre. Le texte de référence reste entièrement présent — mais
+# UNIQUEMENT dans la liste d'items juste en dessous, un mot isolé par ligne.
+_BLOC_REFERENCE_ITEMS_SEULS = (
+    "# PAS de texte de référence en phrase continue : volontaire. Base-toi "
+    "UNIQUEMENT sur le mot attendu de chaque item ci-dessous. Ne reconstitue pas "
+    "mentalement la phrase complète pour deviner un mot par le sens ou l'habitude — "
+    "juge chaque item sur ce que tu VOIS écrit à cet endroit précis de l'image.\n\n"
+)
 
 _TEMPLATE_TRANSCRIPTION: list[ChatMessageDict] = [
     {
@@ -335,7 +364,7 @@ def _format_sortie(chain_of_thought: bool, count_items: bool) -> str:
     return "\n".join(consignes)
 
 
-def _fautes_connues(item: GridItem, scheme: str) -> str:
+def _fautes_connues(item: GridItem, scheme: str, contraste: bool = False) -> str:
     """Fautes déjà observées sur cet item par les correcteurs, prêtes pour le prompt.
 
     En grille simplifiée, les trois familles (lexicale, grammaticale, mixte) sont
@@ -345,6 +374,9 @@ def _fautes_connues(item: GridItem, scheme: str) -> str:
     Args:
         item: item de la grille.
         scheme: schéma de codage cible.
+        contraste: si True (expérimentation 4), rappelle le mot ATTENDU juste à côté
+            des fautes connues, plutôt que les fautes seules — pour contrebalancer le
+            risque de suggestion (le modèle ancré sur la seule liste de fautes).
 
     Returns:
         Le fragment de ligne à accoler à l'item, vide si aucune faute n'est connue.
@@ -360,20 +392,32 @@ def _fautes_connues(item: GridItem, scheme: str) -> str:
             for libelle, formes in groupes
             if formes
         ]
-        return ("  [fautes déjà observées — " + " ; ".join(parts) + "]") if parts else ""
+        if not parts:
+            return ""
+        if contraste:
+            return (
+                f"  [attendu : « {item.attendu} » — confusions fréquentes — "
+                + " ; ".join(parts)
+                + "]"
+            )
+        return "  [fautes déjà observées — " + " ; ".join(parts) + "]"
 
     # Dédoublonnage en conservant l'ordre : une même forme peut figurer dans deux
     # familles, et la répéter au modèle n'apporte rien.
     formes = list(dict.fromkeys([*item.ex_lexicale, *item.ex_grammaticale, *item.ex_les_deux]))
     if not formes:
         return ""
-    return "  [fautes déjà observées : " + ", ".join(f"« {f} »" for f in formes) + "]"
+    liste_formes = ", ".join(f"« {f} »" for f in formes)
+    if contraste:
+        return f"  [attendu : « {item.attendu} » — confusions fréquentes : {liste_formes}]"
+    return f"  [fautes déjà observées : {liste_formes}]"
 
 
 def _format_items(
     items: list[GridItem],
     show_error_examples: bool = False,
     scheme: str = "simplifiee",
+    contrastive_examples: bool = False,
 ) -> str:
     """Formate la liste des items « N. identifiant -> « mot » (nature) », un par ligne.
 
@@ -381,6 +425,8 @@ def _format_items(
         items: items de la grille à formater.
         show_error_examples: si True, accole à chaque item les fautes déjà observées.
         scheme: schéma de codage cible (sert au regroupement des fautes connues).
+        contrastive_examples: si True (expérimentation 4), présente le mot attendu en
+            contraste des fautes connues au lieu des fautes seules.
 
     Returns:
         Le texte des items numérotés, une ligne par item.
@@ -388,7 +434,7 @@ def _format_items(
     lignes = []
     for idx, it in enumerate(items, 1):
         nature = "ponctuation" if it.type == "ponctuation" else "mot"
-        suffixe = _fautes_connues(it, scheme) if show_error_examples else ""
+        suffixe = _fautes_connues(it, scheme, contrastive_examples) if show_error_examples else ""
         lignes.append(f"  {idx:>2}. {it.item_id} → « {it.attendu} » ({nature}){suffixe}")
     return "\n".join(lignes)
 
@@ -515,10 +561,17 @@ def build_dictation_prompt(
         blocs.append(_CONSIGNE_VOISINAGE)
     if config.show_error_examples:
         blocs.append(_CONSIGNE_EXEMPLES)
+    if config.check_punctuation_presence:
+        blocs.append(_CONSIGNE_PONCTUATION)
     consignes_optionnelles = ("\n\n" + "\n\n".join(blocs)) if blocs else ""
 
     consigne_cot = ("\n\n" + _CONSIGNE_COT) if config.chain_of_thought else ""
     format_sortie = _format_sortie(config.chain_of_thought, config.count_items)
+    bloc_reference = (
+        _BLOC_REFERENCE_ITEMS_SEULS
+        if config.reference_items_only
+        else _BLOC_REFERENCE_PHRASE.format(reference_text=reference_text)
+    )
 
     return _compile_prompt(
         PROMPT_DICTATION,
@@ -527,8 +580,10 @@ def build_dictation_prompt(
             "grille": grille,
             "consignes_optionnelles": consignes_optionnelles,
             "consigne_cot": consigne_cot,
-            "reference_text": reference_text,
-            "items_list": _format_items(items, config.show_error_examples, scheme),
+            "bloc_reference": bloc_reference,
+            "items_list": _format_items(
+                items, config.show_error_examples, scheme, config.contrastive_examples
+            ),
             "n_items": len(items),
             "format_sortie": format_sortie,
         },
