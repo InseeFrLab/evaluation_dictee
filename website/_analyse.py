@@ -52,6 +52,7 @@ try:
     from evaluation_dictee.evaluation.report import (
         copies_by_disagreement,
         disagreement_decomposition,
+        filtrer_evaluables,
         load_predictions,
         per_copy_metrics,
         per_item_metrics,
@@ -85,9 +86,46 @@ def _liste_env(variable: str, defaut: list[str]) -> list[str]:
 
 
 #: Approches comparées, dans l'ordre d'affichage : libellé → champ `name` du YAML.
+#: Ce sont les deux MÉTHODES du projet (CLAUDE.md §4) — end-to-end une passe vs
+#: two-stage HTR+codage — PAS des variantes de prompt. `modeles_exportes()` déduit
+#: automatiquement la liste des modèles depuis S3 en retirant ces deux préfixes ;
+#: y ajouter une approche de plus déduite d'un nom de fichier a déjà provoqué un
+#: bug (D9 — un run `dictee_end2end_cot_<modele>` lu comme un faux modèle) et un
+#: second, plus subtil (deux préfixes qui se chevauchent : `dictee_end2end` est
+#: aussi un préfixe de `dictee_end2end_comptage_exemples`). Voir `MODELES_PROMUS`
+#: ci-dessous pour publier une variante de prompt sans reproduire ces bugs :
+#: la promotion y est déclarée à la main, jamais déduite d'un nom de fichier.
 APPROCHES: dict[str, str] = {
     "end-to-end": "dictee_end2end",
     "two-stage": "dictee_two_stage",
+}
+
+#: Promotion manuelle d'un modèle vers le MEILLEUR prompt end-to-end trouvé pour lui
+#: (décision D10, docs/decisions.md). Le gain n'étant PAS uniforme entre modèles —
+#: qwen3-8-27b et qwen3-6-35b-moe gagnent avec comptage+exemples, gemma4-26b-moe
+#: gagne avec exemples seul, et y perdrait avec comptage+exemples — ce choix reste
+#: manuel : rien n'est déduit automatiquement d'un nom de fichier.
+#:
+#: Clé = nom du modèle. Valeur = nom du run promu (champ `name` de sa config, SANS
+#: le suffixe modèle). Volontairement séparé d'`APPROCHES` : un modèle non promu ne
+#: doit jamais être signalé « incomplet » au seul motif qu'il n'a pas de promotion
+#: (voir `approche_promue`, jamais mêlée à `approches_du_modele`/`MODELES_COMPLETS`).
+#:
+#: Pour publier un modèle ici :
+#:   1. Lancer son run sur le corpus COMPLET (launchers/launch_eval.sh, SANS --limit) ;
+#:   2. Vérifier l'export à la racine de `predictions/` (pas `experimentations/` —
+#:      un run partiel y est automatiquement écarté, voir décision D9) ;
+#:   3. Ajouter la ligne ci-dessous, puis re-render le site.
+MODELES_PROMUS: dict[str, str] = {
+    # "qwen3-8-27b": "dictee_end2end_comptage_exemples",
+    # "qwen3-6-35b-moe": "dictee_end2end_comptage_exemples",
+    # "gemma4-26b-moe": "dictee_end2end_exemples",
+}
+
+#: Libellé affiché pour chaque run promu, par son nom (la valeur de `MODELES_PROMUS`).
+LIBELLES_PROMOTION: dict[str, str] = {
+    "dictee_end2end_comptage_exemples": "end-to-end (comptage+exemples)",
+    "dictee_end2end_exemples": "end-to-end (exemples)",
 }
 
 #: Modèles retenus si la découverte automatique ne trouve rien (S3 injoignable,
@@ -171,8 +209,13 @@ def couleur_run(approche: str, modele: str, modeles: list[str] | None = None) ->
     rang_modele = liste.index(modele) if modele in liste else 0
     nuances = NUANCES_APPROCHE.get(approche)
     if nuances is None:
-        rang_approche = list(APPROCHES).index(approche) if approche in APPROCHES else 0
-        return COULEURS_RUN[(rang_modele * len(APPROCHES) + rang_approche) % len(COULEURS_RUN)]
+        # Les libellés de promotion (LIBELLES_PROMOTION) sont inclus APRÈS ceux
+        # d'APPROCHES : sans ça, une approche promue retomberait sur le rang 0 par
+        # défaut et partagerait la couleur de « end-to-end » pour le même modèle.
+        approches_connues = [*APPROCHES, *LIBELLES_PROMOTION.values()]
+        largeur = len(approches_connues) or 1
+        rang_approche = approches_connues.index(approche) if approche in approches_connues else 0
+        return COULEURS_RUN[(rang_modele * largeur + rang_approche) % len(COULEURS_RUN)]
     return nuances[rang_modele % len(nuances)]
 
 
@@ -495,6 +538,12 @@ def _noms_exportes() -> list[str]:
     après quoi les autres fichiers deviennent invisibles — y compris pour
     `load_predictions`, qui échouerait alors sur un fichier bien présent.
 
+    Ce listing est volontairement NON récursif : les bras d'expérience (testés sur un
+    échantillon, cf. `scripts/rapport_bras.py`) sont exportés dans le sous-dossier
+    `predictions/experimentations/` (voir `scripts/export_predictions.py`), invisible
+    d'ici par construction. Un run n'alimente donc le site que s'il a été exporté au
+    niveau racine de `predictions/` — c'est-à-dire mené sur le corpus complet.
+
     Returns:
         Les noms de runs (suffixe de modèle compris, `_predictions.jsonl` ôté),
         hors runs HTR. Liste vide si le préfixe est injoignable.
@@ -547,16 +596,24 @@ def modeles_exportes() -> list[str]:
     suffixe dont un autre suffixe est le préfixe est donc ramené à ce préfixe,
     c'est-à-dire au modèle de l'étape 1 — le seul axe de comparaison du site.
 
+    Un fichier promu (ex. `dictee_end2end_comptage_exemples_qwen3-8-27b`) est posé à
+    la racine de `predictions/`, là où ce listing cherche — et son nom COMMENCE par
+    `dictee_end2end_`, comme un run de référence. Sans exclusion explicite, il serait
+    lu comme le modèle fantôme `comptage_exemples_qwen3-8-27b` : chaque base connue de
+    `LIBELLES_PROMOTION` est donc écartée AVANT de chercher un modèle, pour qu'un nom
+    de run réservé à une promotion ne soit jamais confondu avec un modèle inconnu.
+
     Returns:
         Les noms de modèles, par ordre alphabétique. Liste vide si le préfixe est
         injoignable ou ne contient aucun run.
     """
+    bases_promotion = tuple(LIBELLES_PROMOTION)
     suffixes = sorted(
         {
             nom[len(base) + 1 :]
             for base in APPROCHES.values()
             for nom in _noms_exportes()
-            if nom.startswith(base + "_")
+            if nom.startswith(base + "_") and not nom.startswith(bases_promotion)
         }
     )
     modeles = [
@@ -576,13 +633,45 @@ MODELES: list[str] = _liste_env("RESULTATS_MODELES", modeles_exportes() or MODEL
 
 
 def approches_du_modele(modele: str) -> list[str]:
-    """Approches réellement exportées pour un modèle, dans l'ordre d'affichage."""
+    """Approches CŒUR réellement exportées pour un modèle (end-to-end / two-stage).
+
+    Ne regarde QUE `APPROCHES`, jamais `MODELES_PROMUS` : c'est cette liste qui pilote
+    le message « comparaison end-to-end vs two-stage incomplète » et la sélection des
+    modèles complets (`MODELES_COMPLETS`). Un modèle non promu sur un prompt bonus
+    n'a AUCUNE raison d'être signalé incomplet pour autant — voir `approche_promue`
+    pour afficher la promotion à part, sans jamais la mélanger à ce calcul.
+    """
     return [approche for approche, base in APPROCHES.items() if _run_du_modele(base, modele)]
 
 
-#: Modèles évalués sur TOUTES les approches : les seuls pour lesquels la
-#: comparaison end-to-end vs two-stage est complète. Ils sont préférés comme
-#: sélection par défaut, pour que la page s'ouvre sur une vue non tronquée.
+def approche_promue(modele: str) -> tuple[str, str] | None:
+    """Libellé et nom du run promu pour ce modèle, si déclaré ET réellement exporté.
+
+    Reste hors d'`APPROCHES`/`approches_du_modele` à dessein (voir leurs docstrings) :
+    la promotion est un bonus par modèle, pas une troisième approche que tout modèle
+    devrait couvrir pour être « complet ».
+
+    Args:
+        modele: nom du modèle.
+
+    Returns:
+        Le couple (libellé affiché, nom du run), ou None si non promu dans
+        `MODELES_PROMUS`, ou promu mais introuvable sur S3 (run pas encore exporté).
+    """
+    base = MODELES_PROMUS.get(modele)
+    if base is None:
+        return None
+    nom = _run_du_modele(base, modele)
+    if nom is None:
+        return None
+    return LIBELLES_PROMOTION.get(base, base), nom
+
+
+#: Modèles évalués sur les DEUX approches cœur (end-to-end + two-stage) : les seuls
+#: pour lesquels cette comparaison est complète. Ils sont préférés comme sélection
+#: par défaut, pour que la page s'ouvre sur une vue non tronquée. Une promotion
+#: (`MODELES_PROMUS`) n'entre PAS dans ce calcul, par construction : voir
+#: `approches_du_modele`.
 MODELES_COMPLETS: list[str] = [
     modele for modele in MODELES if len(approches_du_modele(modele)) == len(APPROCHES)
 ]
@@ -662,6 +751,10 @@ def runs_attendus(modeles: list[str] | None = None) -> dict[str, str]:
 #: le même JSONL serait relu sur S3 autant de fois qu'il apparaît dans une vue.
 _CACHE_RUNS: dict[tuple[str, str], Run | None] = {}
 
+#: Copies écartées des métriques par run (motif -> nombre de copies), pour une note
+#: unique en bas de page plutôt qu'une ligne par run.
+_ECARTEES: dict[str, dict[str, int]] = {}
+
 
 def _charger_run(approche: str, base: str, modele: str, manquants: list[str]) -> Run | None:
     """Charge un run (approche × modèle), en mémorisant lectures et échecs.
@@ -693,6 +786,15 @@ def _charger_run(approche: str, base: str, modele: str, manquants: list[str]) ->
         return None
     if df.empty:
         NOTES.append(f"`{nom}` est vide : run omis.")
+        return None
+    # Décision D8 : les copies vierges (auto-codées sans appel modèle) et les items
+    # illisibles (code expert « i ») sortent des métriques. Les inclure surestimait
+    # le kappa d'environ 0,02 sur l'échantillon de 500 copies.
+    df, retirees = filtrer_evaluables(df)
+    if retirees:
+        _ECARTEES[nom] = retirees
+    if df.empty:
+        NOTES.append(f"`{nom}` ne contient aucune copie évaluable : run omis.")
         return None
     _CACHE_RUNS[cle] = Run(
         label=libelle_run(approche, modele),
@@ -732,6 +834,17 @@ def charger_runs(modeles: list[str] | None = None) -> dict[str, Run]:
             run = _charger_run(approche, base, modele, manquants)
             if run is not None:
                 runs[run.label] = run
+    # Promotions (MODELES_PROMUS) : chargées À PART, jamais mêlées à la boucle
+    # ci-dessus. Un modèle non promu ne doit pas finir dans `manquants` au seul
+    # motif qu'il n'a pas de prompt bonus.
+    for modele in demandes:
+        promotion = approche_promue(modele)
+        if promotion is None:
+            continue
+        libelle, _nom = promotion
+        run = _charger_run(libelle, MODELES_PROMUS[modele], modele, manquants)
+        if run is not None:
+            runs[run.label] = run
     if manquants:
         NOTES.append(
             f"Non exporté(s), donc absent(s) des comparaisons : {', '.join(manquants)}. "
@@ -743,6 +856,19 @@ def charger_runs(modeles: list[str] | None = None) -> dict[str, Run]:
         NOTES.append(
             "Aucun run n'a pu être chargé. Vérifier `S3_PREDICTIONS_PREFIX` et "
             "l'export (`uv run scripts/export_predictions.py --config …`)."
+        )
+    if _ECARTEES:
+        total = {}
+        for motifs in _ECARTEES.values():
+            for motif, n in motifs.items():
+                total[motif] = max(total.get(motif, 0), n)
+        detail = ", ".join(f"{n} {motif}(s)" for motif, n in sorted(total.items()))
+        NOTES.append(
+            f"Copies écartées des métriques : {detail} (par run). Une copie **vierge** "
+            "est codée « absent » sans appel modèle, et un item **illisible** (code "
+            "expert « i ») n'a reçu aucun jugement auquel comparer le modèle : les "
+            "compter lui imputerait un défaut de numérisation ou d'annotation. Les "
+            "inclure surestimait le kappa d'environ 0,02. Voir la décision D8."
         )
     return runs
 

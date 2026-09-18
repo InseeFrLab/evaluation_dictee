@@ -20,6 +20,26 @@ class AlignedPrediction:
     transcription: str | None
     confidence: float | None
     realigned: bool = False  # True si l'item a été déplacé par le ré-alignement
+    # Comparaison lue-attendue (mode chain-of-thought). Elle suit le token du modèle
+    # auquel elle appartient : sans cela, elle était perdue dès qu'une copie était
+    # ré-alignée — c'est-à-dire précisément sur les copies décalées, celles que l'on
+    # veut inspecter.
+    comparaison: str | None = None
+
+
+def _at(sequence: list[str | None] | None, index: int) -> str | None:
+    """Élément `index` d'une séquence optionnelle, ou None si elle est absente/trop courte.
+
+    Args:
+        sequence: séquence optionnelle (les comparaisons ne sont fournies qu'en mode CoT).
+        index: position voulue.
+
+    Returns:
+        L'élément, ou None.
+    """
+    if sequence is None or index < 0 or index >= len(sequence):
+        return None
+    return sequence[index]
 
 
 def _norm(s: str | None) -> str:
@@ -99,6 +119,7 @@ def realign(
     transcriptions: list[str | None],
     confidences: list[float | None],
     gap_penalty: float = -0.3,
+    comparaisons: list[str | None] | None = None,
 ) -> list[AlignedPrediction]:
     """Ré-aligne les prédictions sur les mots attendus (Needleman-Wunsch) ; mot absent codé "0".
 
@@ -108,6 +129,7 @@ def realign(
         transcriptions: transcriptions correspondant aux codes.
         confidences: scores de confiance correspondant aux codes.
         gap_penalty: pénalité appliquée à un saut (mot non lu ou token en trop).
+        comparaisons: comparaisons lues-attendues correspondant aux codes (mode CoT).
 
     Returns:
         Une prédiction alignée par mot attendu ; "0" si le mot n'a pas été lu, "?"
@@ -138,6 +160,7 @@ def realign(
                 transcription=transcriptions[j - 1],
                 confidence=confidences[j - 1],
                 realigned=(i - 1) != (j - 1),
+                comparaison=_at(comparaisons, j - 1),
             )
             i, j = i - 1, j - 1
         elif score[i][j] == score[i - 1][j] + gap_penalty:
@@ -174,6 +197,7 @@ def realign_anchored(
     codes: list[str],
     transcriptions: list[str | None],
     confidences: list[float | None],
+    comparaisons: list[str | None] | None = None,
 ) -> list[AlignedPrediction]:
     """Alignement par ancrage sur les correspondances exactes uniques, réparti entre les ancres.
 
@@ -184,6 +208,7 @@ def realign_anchored(
         codes: codes prédits par le modèle, dans l'ordre de ses tokens.
         transcriptions: transcriptions correspondant aux codes.
         confidences: scores de confiance correspondant aux codes.
+        comparaisons: comparaisons lues-attendues correspondant aux codes (mode CoT).
 
     Returns:
         Une prédiction alignée par mot attendu ; "0" si le mot n'a pas été lu, "?"
@@ -213,7 +238,11 @@ def realign_anchored(
         # placer l'ancre i1 elle-même
         if 0 <= i1 < n and 0 <= j1 < m:
             result[i1] = AlignedPrediction(
-                codes[j1], transcriptions[j1], confidences[j1], realigned=(i1 != j1)
+                codes[j1],
+                transcriptions[j1],
+                confidences[j1],
+                realigned=(i1 != j1),
+                comparaison=_at(comparaisons, j1),
             )
         # répartir le segment ouvert (i0, i1) ↔ (j0, j1) positionnellement
         seg_exp = list(range(i0 + 1, i1))
@@ -222,7 +251,11 @@ def realign_anchored(
             if k < len(seg_mod):
                 jm = seg_mod[k]
                 result[ie] = AlignedPrediction(
-                    codes[jm], transcriptions[jm], confidences[jm], realigned=(ie != jm)
+                    codes[jm],
+                    transcriptions[jm],
+                    confidences[jm],
+                    realigned=(ie != jm),
+                    comparaison=_at(comparaisons, jm),
                 )
             else:
                 result[ie] = AlignedPrediction("0", None, 0.0, realigned=True)
@@ -237,6 +270,7 @@ def best_realignment(
     codes: list[str],
     transcriptions: list[str | None],
     confidences: list[float | None],
+    comparaisons: list[str | None] | None = None,
 ) -> list[AlignedPrediction]:
     """Applique Needleman-Wunsch et ancrage, garde l'alignement le plus proche des mots attendus.
 
@@ -245,12 +279,13 @@ def best_realignment(
         codes: codes prédits par le modèle, dans l'ordre de ses tokens.
         transcriptions: transcriptions correspondant aux codes.
         confidences: scores de confiance correspondant aux codes.
+        comparaisons: comparaisons lues-attendues correspondant aux codes (mode CoT).
 
     Returns:
         L'alignement (parmi `realign` et `realign_anchored`) de meilleure qualité.
     """
     candidats = [
-        realign(expected_words, codes, transcriptions, confidences),
-        realign_anchored(expected_words, codes, transcriptions, confidences),
+        realign(expected_words, codes, transcriptions, confidences, comparaisons=comparaisons),
+        realign_anchored(expected_words, codes, transcriptions, confidences, comparaisons),
     ]
     return max(candidats, key=lambda a: _alignment_quality(expected_words, a))

@@ -35,7 +35,8 @@ def _run_metadata(config: ExperimentConfig) -> dict[str, str]:
 
     Returns:
         Dictionnaire {modèle, modèle étape 2, approche, méthode, schéma, n_few_shot,
-        corpus} en chaînes. `model_stage2` vaut "-" en end_to_end.
+        corpus, raisonnement, sortie contrainte} en chaînes. `model_stage2` vaut "-"
+        en end_to_end.
     """
     return {
         "model": config.model.name,
@@ -47,6 +48,18 @@ def _run_metadata(config: ExperimentConfig) -> dict[str, str]:
         "scheme": config.grid.scheme,
         "n_few_shot": str(config.prompt.n_few_shot),
         "corpus": config.data.corpus,
+        # Sans ces champs, deux runs qui ne diffèrent que par la façon de faire
+        # raisonner le modèle sont indiscernables dans Langfuse — or c'est exactement
+        # la comparaison que l'on cherche à faire. Chaque option de prompt y figure,
+        # pour qu'un run reste interprétable sans son YAML sous les yeux.
+        "thinking": "off" if config.model.disable_thinking else "on",
+        "chain_of_thought": str(config.prompt.chain_of_thought).lower(),
+        "count_items": str(config.prompt.count_items).lower(),
+        "enforce_count": str(config.prompt.enforce_count).lower(),
+        "check_neighbours": str(config.prompt.check_neighbours).lower(),
+        "show_error_examples": str(config.prompt.show_error_examples).lower(),
+        "structured_output": str(config.model.structured_output).lower(),
+        "max_tokens": str(config.model.max_tokens),
     }
 
 
@@ -57,15 +70,27 @@ def _run_tags(config: ExperimentConfig) -> list[str]:
         config: Configuration de l'expérience.
 
     Returns:
-        Liste de tags (méthode, corpus, `scheme:…`, `model:…`, éventuellement
-        `model_stage2:…`, `run:<nom>`).
+        Liste de tags (méthode, corpus, `scheme:…`, `model:…`, `thinking:…`,
+        éventuellement `cot`, `model_stage2:…`, `run:<nom>`).
     """
     tags = [
         config.prompt.method,
         config.data.corpus,
         f"scheme:{config.grid.scheme}",
         f"model:{config.model.name}",
+        f"thinking:{'off' if config.model.disable_thinking else 'on'}",
     ]
+    # Un tag par option active : c'est ce qui permet de retrouver « tous les runs
+    # avec exemples de fautes » d'un clic dans l'UI, sans lire les métadonnées.
+    for actif, tag in [
+        (config.prompt.chain_of_thought, "cot"),
+        (config.prompt.count_items, "comptage"),
+        (config.prompt.enforce_count, "coherence-comptage"),
+        (config.prompt.check_neighbours, "voisinage"),
+        (config.prompt.show_error_examples, "exemples-fautes"),
+    ]:
+        if actif:
+            tags.append(tag)
     # Tag distinct seulement si l'étape 2 utilise un autre modèle : évite un tag
     # redondant sur les runs two_stage mono-modèle, tout en rendant filtrables les
     # runs qui croisent deux modèles.

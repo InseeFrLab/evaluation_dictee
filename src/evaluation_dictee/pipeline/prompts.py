@@ -7,6 +7,7 @@ Chaque prompt est un template chat versionné dans Langfuse, avec repli local si
 
 from __future__ import annotations
 
+import json
 from typing import cast
 
 from langfuse import get_client
@@ -89,32 +90,95 @@ _CONSIGNE_RATURES = (
     "(corrigée par l'élève), pas la version barrée.\n"
 )
 
-_CONSIGNE_CONFIANCE = (
-    "7 - Pour chaque item, fournis un score de confiance entre 0 et 1 reflétant ta "
-    "certitude (lisibilité, ambiguïté). Un score bas déclenchera une relecture humaine.\n"
-)
-
+# TROIS branches obligatoires, dont l'absence. Avec seulement « identique » ou
+# « décris la différence », un item que l'élève n'a pas écrit n'avait aucune issue :
+# le modèle recopiait le mot ATTENDU et le déclarait identique (mesuré le 11/09/2026 :
+# 81 items absents codés 1, et le kappa tombait de 0,705 à 0,483). Le champ obligatoire
+# transformait l'absence en présence — la sur-correction que le projet cherche à éviter.
 _CONSIGNE_COT = (
     "8 - AVANT de choisir le code, écris un champ « comparaison » qui décrit "
-    "explicitement en quoi la transcription diffère du mot attendu (ou "
-    "précise « identique » si elles correspondent lettre à lettre). "
-    "Exemple : attendu « inquiets » lu « inquiet » → « il manque le 's' final ».\n"
+    "explicitement le rapport entre ce que TU LIS SUR LA COPIE et le mot attendu. "
+    "Trois cas, et trois seulement :\n"
+    "   a - tu lis le mot et il correspond lettre à lettre → « identique » (code 1) ;\n"
+    "   b - tu lis le mot mais il diffère → décris la différence (code 9). "
+    "Exemple : attendu « inquiets » lu « inquiet » → « il manque le 's' final » ;\n"
+    "   c - le mot attendu NE FIGURE PAS sur la copie, l'élève ne l'a pas écrit → "
+    "« absent », transcription vide, code 0.\n"
+    "   Le cas c est le piège principal : tu as le texte de référence sous les yeux, "
+    "et il est tentant d'y recopier un mot que l'élève n'a jamais écrit puis de le "
+    "déclarer « identique ». N'invente JAMAIS une transcription à partir du texte de "
+    "référence. Si tu ne vois rien d'écrit pour cet item sur l'image, c'est « absent ».\n"
 )
 
-# Format de sortie JSON de la méthode C, avec ou sans champ « comparaison » (CoT).
-_FORMAT_ITEMS_COT = (
-    "Réponds UNIQUEMENT par un objet JSON, sans texte autour ni de notes, de la forme :\n"
-    '{"items": [{"item_id": "...", "transcription": "ce que l\'élève a écrit", '
-    '"comparaison": "identique" OU description brève de la différence, '
-    '"code": "1", "confidence": 0.95, "reason": "les raisons du choix"}, ...]}.\n'
-    "Tout ajout de texte hors de la structure du JSON sera pris comme une erreur par le pipeline."
+_CONSIGNE_EXEMPLES = (
+    "12 - FAUTES DÉJÀ OBSERVÉES : pour certains items, la liste ci-dessous indique entre "
+    "crochets les formes fautives que des correcteurs ont réellement relevées sur cet "
+    "item. Sers-t'en comme d'une aide à la LECTURE : ce sont les confusions à guetter "
+    "sur ce mot précis, souvent une seule lettre ou un accent.\n"
+    "   Deux pièges à éviter absolument :\n"
+    "   a - cette liste n'est PAS exhaustive. Une forme qui n'y figure pas reste une "
+    "faute si elle diffère du mot attendu. Ne code pas 1 au motif que ce que tu lis "
+    "n'est pas dans la liste.\n"
+    "   b - ne va JAMAIS vers ces formes par suggestion. Si l'élève a écrit "
+    "correctement le mot attendu, code 1, même si une faute connue lui ressemble. "
+    "Tu transcris ce que tu VOIS, pas ce qui est probable.\n"
 )
-_FORMAT_ITEMS_SIMPLE = (
-    "Réponds UNIQUEMENT par un objet JSON, sans texte autour ni de notes, de la forme :\n"
-    '{"items": [{"item_id": "...", "transcription": "ce que l\'élève a écrit", '
-    '"code": "1", "confidence": 0.95, "reason": "les raisons du choix"}, ...]}.\n'
-    "Tout ajout de texte hors de la structure du JSON sera pris comme une erreur par le pipeline."
+
+# Expérimentation 3 (18/09/2026) : cible le mécanisme distinct de la ponctuation —
+# elle se rate par OMISSION plutôt que par faute sur la plupart des modèles (section 7
+# des rapports de bras), contrairement aux mots. Aucune règle n'était jusqu'ici propre
+# à ce cas ; la méthode de codage générale (règle 4, "compare lettre à lettre") est
+# pensée pour des mots, pas pour vérifier qu'un signe existe.
+_CONSIGNE_PONCTUATION = (
+    "13 - CAS PARTICULIER DE LA PONCTUATION : pour un item ponctuation, commence "
+    "TOUJOURS par vérifier qu'un signe est réellement écrit à cet endroit précis de "
+    "la copie, AVANT de juger s'il est du bon type. Un signe absent se code « 0 » "
+    "(absent), jamais « 9 » (erreur) — « 9 » suppose qu'un signe existe mais que ce "
+    "n'est pas le bon (un point à la place d'une virgule, par exemple).\n"
 )
+
+_CONSIGNE_COMPTAGE = (
+    "9 - COMMENCE PAR COMPTER. Avant de coder quoi que ce soit, parcours l'image et "
+    "compte combien d'items l'élève a RÉELLEMENT écrits : chaque mot écrit compte pour "
+    "1, chaque signe de ponctuation écrit compte pour 1. Écris ce total dans le champ "
+    "« n_items_lus », qui est le PREMIER champ de ta réponse.\n"
+    "   Compare-le ensuite au nombre d'items attendus, qui t'est donné plus bas. S'il "
+    "est plus petit, c'est que l'élève a écrit moins que la dictée complète : il DOIT "
+    "donc y avoir au moins autant d'items codés « 0 » (absent) que la différence entre "
+    "les deux nombres. Un élève qui s'arrête au milieu de la dictée laisse tous les "
+    "items suivants absents.\n"
+    "   Tu as le texte de référence sous les yeux : ne t'en sers JAMAIS pour compléter "
+    "ce que l'élève n'a pas écrit. Le comptage est là pour t'en empêcher.\n"
+)
+
+_CONSIGNE_COHERENCE_COMPTAGE = (
+    "10 - FAIS COÏNCIDER TON CODAGE AVEC TON COMPTAGE. Le nombre d'items que tu codes "
+    "« 0 » (absent) doit être EXACTEMENT égal au nombre d'items attendus moins "
+    "« n_items_lus ». Si tu annonces avoir lu 60 items sur 83 attendus, tu dois coder "
+    "exactement 23 items « 0 ». Avant de rendre ta réponse, recompte tes codes « 0 » : "
+    "s'ils ne concordent pas avec ton comptage, l'un des deux est faux, corrige-le. Un "
+    "comptage annoncé puis contredit par le codage ne sert à rien.\n"
+)
+
+_CONSIGNE_VOISINAGE = (
+    "11 - VÉRIFICATION DE VOISINAGE, pour CHAQUE item N (pas seulement en cas de doute) : "
+    "une fois ton code choisi, vérifie que ta transcription de l'item N ressemble bien au "
+    "mot attendu de l'item N — puis que c'est AUSSI le cas pour l'item N-1 et pour l'item "
+    "N+1. Si l'item N correspond mais que N-1 et N+1 sont décalés d'un cran, c'est que tu "
+    "as sauté ou dupliqué un item : recale-toi immédiatement.\n"
+    "   Un mot que l'élève n'a pas écrit décale TOUT ce qui suit si tu ne le codes pas "
+    "« 0 » : au lieu d'un seul item faux, tu en produis vingt. C'est la première cause "
+    "d'erreur en chaîne, et la vérification de voisinage est ce qui la rattrape.\n"
+)
+
+# Format de sortie JSON de la méthode C : UN SEUL exemple, construit dynamiquement
+# par `_format_sortie` selon les options actives. Avant, chaque combinaison avait son
+# texte tapé à la main : count_items concaténait un rappel devant un bloc déjà complet,
+# produisant deux « Réponds UNIQUEMENT... » successifs avec deux exemples divergents
+# (le second oubliait `n_items_lus`). Un seul dict Python, sérialisé une fois, ne peut
+# plus diverger de lui-même — et il ne contient plus de champ absent du schéma
+# (l'ancien `reason`, jamais dans `_items_json_schema`, ni de score de confiance
+# auto-déclaré, jugé peu fiable et retiré : voir docs/decisions.md).
 
 # Consigne « ratures » propre à l'étape de transcription (formulation dédiée).
 _CONSIGNE_RATURES_TRANSCRIPTION = (
@@ -148,7 +212,6 @@ _TEMPLATE_DICTATION: list[ChatMessageDict] = [
             "{{grille}}\n"
             + _CONSIGNE_ALIGNEMENT
             + "{{consignes_optionnelles}}\n\n"
-            + _CONSIGNE_CONFIANCE
             + "{{consigne_cot}}\n\n"
             + _CONSIGNE_RATURES_DICTATION
         ),
@@ -156,8 +219,7 @@ _TEMPLATE_DICTATION: list[ChatMessageDict] = [
     {
         "role": "user",
         "content": (
-            "# Texte de référence (ce que l'élève devait écrire) :\n"
-            "« {{reference_text}} »\n\n"
+            "{{bloc_reference}}"
             "# Items à coder, dans l'ordre. Chaque ligne = un item fixe "
             "« identifiant → mot attendu » :\n"
             "{{items_list}}\n\n"
@@ -166,6 +228,23 @@ _TEMPLATE_DICTATION: list[ChatMessageDict] = [
         ),
     },
 ]
+
+# Bloc "texte de référence" par défaut : la phrase continue, entre guillemets.
+_BLOC_REFERENCE_PHRASE = (
+    "# Texte de référence (ce que l'élève devait écrire) :\n« {reference_text} »\n\n"
+)
+
+# Expérimentation 1 (18/09/2026) : PAS de phrase continue. Vise la tension identifiée
+# entre donner le texte de référence et le biais dominant mesuré (sous-détection) :
+# une phrase familière invite à la reconnaître par lecture fluide plutôt qu'à examiner
+# l'image lettre à lettre. Le texte de référence reste entièrement présent — mais
+# UNIQUEMENT dans la liste d'items juste en dessous, un mot isolé par ligne.
+_BLOC_REFERENCE_ITEMS_SEULS = (
+    "# PAS de texte de référence en phrase continue : volontaire. Base-toi "
+    "UNIQUEMENT sur le mot attendu de chaque item ci-dessous. Ne reconstitue pas "
+    "mentalement la phrase complète pour deviner un mot par le sens ou l'habitude — "
+    "juge chaque item sur ce que tu VOIS écrit à cet endroit précis de l'image.\n\n"
+)
 
 _TEMPLATE_TRANSCRIPTION: list[ChatMessageDict] = [
     {
@@ -224,7 +303,7 @@ _TEMPLATE_TEXT_CODING: list[ChatMessageDict] = [
             "Tu dois rendre EXACTEMENT {{n_items}} items, dans cet ordre.\n"
             "Réponds UNIQUEMENT par un objet JSON, sans texte autour, de la forme :\n"
             '{"items": [{"item_id": "...", "transcription": "mot lu pour cet item", '
-            '"code": "1", "confidence": 0.95}, ...]}'
+            '"code": "1"}, ...]}'
         ),
     },
 ]
@@ -237,11 +316,117 @@ PROMPT_TEMPLATES: dict[str, list[ChatMessageDict]] = {
 }
 
 
-def _format_items(items: list[GridItem]) -> str:
+def _format_sortie(chain_of_thought: bool, count_items: bool) -> str:
+    """Bloc « format de sortie » du prompt : UN SEUL exemple JSON, cohérent.
+
+    Construit un unique dict Python puis le sérialise une fois, plutôt que de coller
+    des morceaux de texte pré-écrits par option : sans quoi deux options combinées
+    produisaient deux blocs « Réponds UNIQUEMENT... » successifs, avec deux exemples
+    divergents (le second oubliait le champ ajouté par le premier). Un seul objet ne
+    peut plus se contredire lui-même, et son ordre de clés reflète exactement
+    `_items_json_schema` (dict Python = ordre d'insertion = ordre JSON).
+
+    Args:
+        chain_of_thought: ajoute le champ « comparaison » par item, avant « code ».
+        count_items: ajoute le champ « n_items_lus » en tête de réponse.
+
+    Returns:
+        Le texte décrivant le JSON attendu.
+    """
+    item: dict[str, str] = {"item_id": "...", "transcription": "ce que l'élève a écrit"}
+    if chain_of_thought:
+        item["comparaison"] = 'identique OU description brève de la différence OU "absent"'
+    item["code"] = "1"
+
+    racine: dict[str, object] = {}
+    if count_items:
+        racine["n_items_lus"] = "<nombre entier d'items que tu as VUS sur la copie>"
+    racine["items"] = [item]
+
+    consignes = [
+        "Réponds UNIQUEMENT par un objet JSON, sans texte autour ni de notes, de la forme :",
+        json.dumps(racine, ensure_ascii=False) + ".",
+    ]
+    if count_items:
+        # Rappelé en clair : l'ordre dans l'exemple JSON seul ne suffit pas toujours à
+        # faire respecter l'ordre de génération réel (mesuré).
+        consignes.append("« n_items_lus » vient EN PREMIER, avant la liste des items.")
+    if chain_of_thought:
+        consignes.append(
+            "RESPECTE CET ORDRE DE CLÉS : « comparaison » vient AVANT « code ». Tu dois "
+            "avoir écrit la différence avant de choisir le code, sinon tu ne fais que "
+            "justifier une décision déjà prise."
+        )
+    consignes.append(
+        "Tout ajout de texte hors de la structure du JSON sera pris comme une erreur "
+        "par le pipeline."
+    )
+    return "\n".join(consignes)
+
+
+def _fautes_connues(item: GridItem, scheme: str, contraste: bool = False) -> str:
+    """Fautes déjà observées sur cet item par les correcteurs, prêtes pour le prompt.
+
+    En grille simplifiée, les trois familles (lexicale, grammaticale, mixte) sont
+    fusionnées : elles y reçoivent toutes le même code « erreur ». En grille complète
+    elles restent distinctes, puisque c'est précisément ce que le modèle doit trancher.
+
+    Args:
+        item: item de la grille.
+        scheme: schéma de codage cible.
+        contraste: si True (expérimentation 4), rappelle le mot ATTENDU juste à côté
+            des fautes connues, plutôt que les fautes seules — pour contrebalancer le
+            risque de suggestion (le modèle ancré sur la seule liste de fautes).
+
+    Returns:
+        Le fragment de ligne à accoler à l'item, vide si aucune faute n'est connue.
+    """
+    if scheme == "complete":
+        groupes = [
+            ("lexicales", item.ex_lexicale),
+            ("grammaticales", item.ex_grammaticale),
+            ("lexicales ET grammaticales", item.ex_les_deux),
+        ]
+        parts = [
+            f"{libelle} : " + ", ".join(f"« {f} »" for f in formes)
+            for libelle, formes in groupes
+            if formes
+        ]
+        if not parts:
+            return ""
+        if contraste:
+            return (
+                f"  [attendu : « {item.attendu} » — confusions fréquentes — "
+                + " ; ".join(parts)
+                + "]"
+            )
+        return "  [fautes déjà observées — " + " ; ".join(parts) + "]"
+
+    # Dédoublonnage en conservant l'ordre : une même forme peut figurer dans deux
+    # familles, et la répéter au modèle n'apporte rien.
+    formes = list(dict.fromkeys([*item.ex_lexicale, *item.ex_grammaticale, *item.ex_les_deux]))
+    if not formes:
+        return ""
+    liste_formes = ", ".join(f"« {f} »" for f in formes)
+    if contraste:
+        return f"  [attendu : « {item.attendu} » — confusions fréquentes : {liste_formes}]"
+    return f"  [fautes déjà observées : {liste_formes}]"
+
+
+def _format_items(
+    items: list[GridItem],
+    show_error_examples: bool = False,
+    scheme: str = "simplifiee",
+    contrastive_examples: bool = False,
+) -> str:
     """Formate la liste des items « N. identifiant -> « mot » (nature) », un par ligne.
 
     Args:
         items: items de la grille à formater.
+        show_error_examples: si True, accole à chaque item les fautes déjà observées.
+        scheme: schéma de codage cible (sert au regroupement des fautes connues).
+        contrastive_examples: si True (expérimentation 4), présente le mot attendu en
+            contraste des fautes connues au lieu des fautes seules.
 
     Returns:
         Le texte des items numérotés, une ligne par item.
@@ -249,7 +434,8 @@ def _format_items(items: list[GridItem]) -> str:
     lignes = []
     for idx, it in enumerate(items, 1):
         nature = "ponctuation" if it.type == "ponctuation" else "mot"
-        lignes.append(f"  {idx:>2}. {it.item_id} → « {it.attendu} » ({nature})")
+        suffixe = _fautes_connues(it, scheme, contrastive_examples) if show_error_examples else ""
+        lignes.append(f"  {idx:>2}. {it.item_id} → « {it.attendu} » ({nature}){suffixe}")
     return "\n".join(lignes)
 
 
@@ -354,7 +540,7 @@ def build_dictation_prompt(
     Args:
         reference_text: texte de référence de la dictée.
         items: items de la grille à coder.
-        config: options de prompt (fidélité, ratures, chain-of-thought).
+        config: options de prompt (fidélité, ratures, chain-of-thought, comptage).
         scheme: schéma de grille, "complete" ou "simplifiee" (défaut).
 
     Returns:
@@ -367,14 +553,25 @@ def build_dictation_prompt(
         blocs += [_CONSIGNE_FIDELITE, _CONSIGNE_COMPARAISON]
     if config.read_final_state:
         blocs += [_CONSIGNE_RATURES, _CONSIGNE_RATURES_HALLUCINATION]
+    if config.count_items:
+        blocs.append(_CONSIGNE_COMPTAGE)
+    if config.enforce_count and config.count_items:
+        blocs.append(_CONSIGNE_COHERENCE_COMPTAGE)
+    if config.check_neighbours:
+        blocs.append(_CONSIGNE_VOISINAGE)
+    if config.show_error_examples:
+        blocs.append(_CONSIGNE_EXEMPLES)
+    if config.check_punctuation_presence:
+        blocs.append(_CONSIGNE_PONCTUATION)
     consignes_optionnelles = ("\n\n" + "\n\n".join(blocs)) if blocs else ""
 
-    if config.chain_of_thought:
-        consigne_cot = "\n\n" + _CONSIGNE_COT
-        format_sortie = _FORMAT_ITEMS_COT
-    else:
-        consigne_cot = ""
-        format_sortie = _FORMAT_ITEMS_SIMPLE
+    consigne_cot = ("\n\n" + _CONSIGNE_COT) if config.chain_of_thought else ""
+    format_sortie = _format_sortie(config.chain_of_thought, config.count_items)
+    bloc_reference = (
+        _BLOC_REFERENCE_ITEMS_SEULS
+        if config.reference_items_only
+        else _BLOC_REFERENCE_PHRASE.format(reference_text=reference_text)
+    )
 
     return _compile_prompt(
         PROMPT_DICTATION,
@@ -383,8 +580,10 @@ def build_dictation_prompt(
             "grille": grille,
             "consignes_optionnelles": consignes_optionnelles,
             "consigne_cot": consigne_cot,
-            "reference_text": reference_text,
-            "items_list": _format_items(items),
+            "bloc_reference": bloc_reference,
+            "items_list": _format_items(
+                items, config.show_error_examples, scheme, config.contrastive_examples
+            ),
             "n_items": len(items),
             "format_sortie": format_sortie,
         },

@@ -26,8 +26,13 @@ class _FakeClient:
     def _create(self, **kwargs):  # noqa: ANN003
         self.appels.append(kwargs)
         contenu = self._reponses.pop(0)
-        msg = SimpleNamespace(content=contenu)
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+        msg = SimpleNamespace(content=contenu, model_extra={})
+        # `finish_reason` fait partie de toute réponse réelle : le pipeline s'en sert
+        # pour détecter une génération tronquée par `max_tokens`.
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=msg, finish_reason="stop")],
+            usage=SimpleNamespace(completion_tokens=100),
+        )
 
 
 def _make_scorer(reponses: list[str], monkeypatch) -> TwoStageScorer:
