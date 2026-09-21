@@ -1,159 +1,234 @@
-# Évaluation automatique de la dictée des élèves
+# Évaluation automatique de la dictée
 
-Évaluer automatiquement la dictée manuscrite d'élèves (CEDRE, école primaire) à
-l'aide de modèles multimodaux open weight, et **comparer rigoureusement** le codage
-automatique à celui d'un correcteur expert. Collaboration **DEPP × SSP Lab (INSEE)**.
+Collaboration **DEPP × SSP Lab (Insee)**, destinée aux équipes qui évaluent
+l'opportunité d'assister la correction humaine par l'IA.
 
-> Contexte, décisions méthodologiques et conventions : **[CLAUDE.md](CLAUDE.md)** et
-> [`docs/decisions.md`](docs/decisions.md).
+[![CI](https://github.com/InseeFrLab/evaluation_dictee/actions/workflows/ci.yml/badge.svg)](https://github.com/InseeFrLab/evaluation_dictee/actions/workflows/ci.yml)
+[![Site](https://github.com/InseeFrLab/evaluation_dictee/actions/workflows/site.yml/badge.svg)](https://inseefrlab.github.io/evaluation_dictee/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
----
+> **Documentation** — contexte, décisions méthodologiques et conventions :
+> [CLAUDE.md](CLAUDE.md) · [`docs/decisions.md`](docs/decisions.md) ·
+> [site Quarto](https://inseefrlab.github.io/evaluation_dictee/)
+
+
 
 ## Ce que fait le projet
 
-1. **Charge** les imagettes de dictée (TIFF 1 bit, depuis S3) et les codes de
-   l'annotateur expert (gold standard).
-2. **Demande à un modèle multimodal** (gemma4 ou qwen3.6 sur llm.lab) de coder chaque
-   mot — correct / erreur / absent — directement depuis l'image et le texte de
-   référence, sans étape d'OCR séparée.
-3. **Compare** les codes du modèle à ceux de l'expert.
-4. **Mesure** la fiabilité (kappa, rappel des fautes, sur-correction) et la
-   **calibration de la confiance**, pour décider quels items renvoyer à un humain.
+Observer la possibilité et la fiabilité d'un codage automatique des items d'une
+dictée manuscrite, recueillie dans le cadre des évaluations
+[**CEDRE**](https://www.education.gouv.fr/depp/cycle-des-evaluations-disciplinaires-realisees-sur-echantillon-cedre-en-fin-d-ecole-et-fin-de-2870).
 
-La cible est la **grille simplifiée** — `1` correct / `9` erreur / `0` absent
-(décision D2 dans [`docs/decisions.md`](docs/decisions.md)).
+### La brique principale du projet : l'évaluation des dictées
 
-### Deux approches comparables
-
-Deux architectures derrière la même interface `Scorer`, choisies par le champ
-`approach` du YAML :
+Deux pipelines sont disponibles pour la prédiction des codes d'évaluation d'une copie scannée, comparées sur les mêmes
+métriques (dont *accord brut* et *kappa de cohen*) :
 
 | Approche | Principe | Intérêt |
 |---|---|---|
-| `end_to_end` *(défaut)* | un VLM lit l'image ET code en une passe | plus simple, moins de perte d'information |
-| `two_stage` | étape 1 transcription HTR, étape 2 codage du texte (`model_stage2`, éventuellement un modèle texte plus léger) | isole les erreurs de **lecture** de celles de **jugement** |
+| **end2end** *(défaut)* | un modèle multimodal (VLM) lit l'image et attribue les codes en une seule passe | plus simple, aucune perte d'information entre deux étapes |
+| **two step** | la copie est d'abord transcrite en texte par un modèle HTR, puis ce texte est codé par un modèle plus léger (LLM Texte) | isole les erreurs de **lecture** de celles de **jugement** |
 
-### Autres briques
+Le choix se fait dans la configuration de l'expérience (voir
+[Configuration](#configuration)).
+
+### Autres briques du projet
 
 - **Évaluation HTR seule** sur le corpus **Scoledit** (transcriptions humaines, fautes
-  préservées) : mesure la fidélité de lecture indépendamment du codage.
-  `configs/htr/`, `scripts/run_htr_benchmark.py`.
-- **Fine-tuning QLoRA** d'un VLM sur Scoledit (CP→CM2) pour spécialiser la lecture :
-  adaptateur léger (~50-200 Mo), **GPU H100 requis**, suivi via **MLflow** (pas
-  Langfuse). `configs/finetune/`, `scripts/finetune_htr_scoledit.py` — voir l'en-tête
-  du script pour les prérequis (`unsloth`, `trl`, `bitsandbytes`).
-- **Site Quarto** ([`website/`](website/)) : architecture, résultats, métriques et
-  fine-tuning expliqués pour un public statisticien novice en IA. La page
-  « Résultats » **déduit de S3 la liste des modèles évalués** et propose un menu
-  déroulant : une vue par modèle (end-to-end vs two-stage), plus une zone de
-  comparaison de deux modèles au choix. Exporter un modèle suffit à l'y faire
-  apparaître, sans toucher au code.
+  d'élèves préservées) : mesure la fidélité de lecture indépendamment du codage, et
+  permet donc de savoir si un désaccord vient d'une mauvaise lecture ou d'un mauvais
+  jugement.
+- **Fine-tuning QLoRA** d'un VLM sur Scoledit (CP→CM2) pour spécialiser la lecture de
+  l'écriture manuscrite d'élèves : produit un adaptateur léger (~50-200 Mo) et
+  demande un **GPU H100**.
 
----
 
-## Démarrage rapide (SSP Cloud / VSCode)
 
-### 1. Installer
+## Installation
+
+### Prérequis
+
+| | Version | Note |
+|---|---|---|
+| **Python** | ≥ 3.11 | installé par `uv` si absent |
+| **[uv](https://docs.astral.sh/uv/)** | ≥ 0.4 | **seul** gestionnaire d'environnement du projet (pas de `pip install` ni de `conda`) |
+| Accès **SSP Cloud** | — | S3 (MinIO), llm.lab, Langfuse ; voir [Configuration](#configuration) |
+| `quarto` | ≥ 1.10 | uniquement pour rendre le site |
+| GPU **H100** | — | uniquement pour le fine-tuning |
+
+`uv` n'est pas installé ? `curl -LsSf https://astral.sh/uv/install.sh | sh`
+(déjà présent sur les services *vscode-python* du SSP Cloud).
+
+### Installation du repo et des dépendances du projet
 
 ```bash
-git clone <url-du-depot> evaluation_dictee
+git clone https://github.com/InseeFrLab/evaluation_dictee.git
 cd evaluation_dictee
 uv sync            # dépendances + groupe dev + mode éditable (imports evaluation_dictee)
 ```
 
-### 2. Configurer les accès
+Extras optionnels, à la demande :
 
-Toute la configuration sensible passe par des **variables d'environnement**, lues via
-`Secrets` (Pydantic, `src/evaluation_dictee/config.py`). **Aucun secret dans le code
-ni dans les YAML.**
+```bash
+uv sync --extra notebooks   # JupyterLab + matplotlib (analyse des résultats)
+uv sync --extra website     # noyau Jupyter + matplotlib (rendu Quarto)
+uv sync --extra gpu         # torch, transformers, vllm (machines GPU seulement)
+```
 
-**Sur le SSP Cloud (recommandé) : le Vault Onyxia.** Stocker les secrets une fois
-(`Mon compte` → `Vault`), puis référencer ce secret au lancement d'un service
-(section `Vault`) : Onyxia les injecte comme variables d'environnement.
+---
 
-| Clé | Valeur |
-|-----|--------|
-| `LLM_BASE_URL` | `https://llm.lab.sspcloud.fr/api/v1` |
-| `LLM_API_KEY` | ton token llm.lab |
-| `LANGFUSE_BASE_URL` | `https://langfuse.lab.sspcloud.fr` |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | depuis l'UI Langfuse |
-| `MLFLOW_TRACKING_URI` | `https://mlflow.lab.sspcloud.fr` (fine-tuning seulement) |
+## Exemple minimal
 
-Les services Onyxia ont déjà `VAULT_ADDR` et `VAULT_TOKEN`, donc le CLI fonctionne
-directement : `vault kv get <chemin>/evaluation_dictee`.
-
-> Les identifiants **S3** (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-> `AWS_SESSION_TOKEN`, `AWS_S3_ENDPOINT`) sont **injectés automatiquement** par
-> Onyxia : rien à configurer pour accéder au stockage.
-
-**En local (hors Onyxia) :** repli sur un fichier `.env`, jamais commité —
-`cp .env.example .env`, puis renseigner `LLM_API_KEY`, `LANGFUSE_*`, et si besoin
-`AWS_*` / `MLFLOW_*`. Le code ne fait aucune différence entre une variable venue du
-Vault et une variable venue de `.env` : dans les deux cas elle arrive par
-l'environnement.
-
-**Vérifier que S3 et le modèle répondent** : les deux commandes de la section
-« Vérifier que tout marche » de l'[aide-mémoire](#aide-mémoire).
-
-### 3. Un premier run, court
+Une fois les accès configurés ([section suivante](#configuration)) :
 
 ```bash
 uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENCE.yaml --limit 5
 ```
 
-Cela produit `data/processed/<name>_<modele>_predictions.jsonl`, une ligne par
-item × copie. **Le nom du fichier porte toujours le modèle** de l'étape 1 (plus celui
-de l'étape 2 s'il diffère), que le modèle vienne du YAML ou de `--model-name` : deux
-modèles n'écrasent donc jamais le même checkpoint, et peuvent tourner en parallèle.
+Cinq copies sont codées et comparées à l'expert en quelques minutes. Résultat :
+`data/processed/<name>_<modele>_predictions.jsonl`, une ligne par item × copie, et
+les métriques d'accord affichées en fin de run.
+
+> Le nom du fichier **porte toujours le modèle** de l'étape 1 (plus celui de l'étape 2
+> s'il diffère), que le modèle vienne du YAML ou de `--model-name` : deux modèles
+> n'écrasent jamais le même checkpoint et peuvent tourner en parallèle.
 
 Tout est journalisé dans **Langfuse** : une *session* par run, une *trace* par copie
 (entrée/sortie + score d'accord), les appels LLM en *générations* imbriquées, et les
 métriques agrégées du run en Scores et metadata.
 
-Deux propriétés à connaître :
 
-- **Reprise automatique.** Le benchmark écrit sur disque après CHAQUE copie
-  (`flush + fsync`). Après une interruption, relancer la même commande saute les
-  copies déjà faites — seule la copie en cours est perdue.
-- **Parallélisme.** Le champ `concurrency` du YAML (défaut 8) règle le nombre de
-  copies évaluées simultanément : c'est le principal levier de temps mural. Monter
-  (16, 32…) si l'endpoint suit, redescendre en cas de timeouts / erreurs 429.
 
-### 4. Le run complet
+## Données
 
-**Ne pas lancer les ~3469 copies à la main** (~30 h) : passer par le lanceur, qui
-détache le run et le mène jusqu'à l'export S3.
+Les données sont **produites et détenues par la DEPP**, qui les met
+à disposition du SSP Lab pour ce projet. Elles ne sont **couvertes ni par la licence
+de ce dépôt** ([MIT](LICENSE), qui ne porte que sur le code) **ni par aucune licence
+ouverte** : tout réemploi hors de ce cadre suppose l'accord de la DEPP.
 
-```bash
-launchers/launch_eval.sh --config configs/scoring/dictee_end2end.yaml
+**Aucune donnée n'est versionnée dans ce dépôt**, et ce n'est pas négociable : les
+copies sont des **écritures d'élèves mineurs**; elles ne quittent jamais le SSP Cloud.
+
+### Origine et accès
+
+| Jeu | Emplacement | Contenu |
+|---|---|---|
+| **Dictée CM2 2015** - imagettes | `s3://projet-production-ecrits-depp/dictee_2015/` | ~3 469 copies scannées |
+| **Dictée CM2 2015** - codes experts | `s3://projet-production-ecrits-depp/resultat_dictee_2015.csv` | *gold standard*, 83 items par copie |
+| [**Scoledit**](https://e-calm.huma-num.fr/) (HTR) | `s3://projet-production-ecrits-depp/scoledit/{scans,annotation}/<niveau>/` | transcriptions humaines CP→CM2, fautes préservées |
+| **Grille de codage** | [`configs/grille_dictee_2015.json`](configs/grille_dictee_2015.json) | *versionné* : mot attendu + fautes connues, par item |
+| **Prédictions exportées** | `$S3_PREDICTIONS_PREFIX` (défaut `…/predictions`) | sorties de run, relues par les notebooks et le site |
+
+Les chemins d'entrée vivent **dans le YAML de chaque expérience**, pas dans `.env` :
+un run reste ainsi reproductible à partir de sa seule config. L'accès S3 est
+transparent sur Onyxia (identifiants injectés), un chemin `s3://…` se lit comme un
+chemin local.
+
+### Format attendu
+
+- Les fichiers `.png` fournis sont en réalité des **TIFF bi-level 1 bit** (compression
+  G4, 1594×2044). `src/evaluation_dictee/data/loaders.py` normalise le format en
+  entrée : ne pas court-circuiter ce chargeur.
+- La binarisation 1 bit détruit les nuances de gris, ce qui rend **les accents
+  difficiles à lire** : c'est une cause connue d'une part des désaccords modèle/expert.
+- Les annotations sont des **codes**, pas des transcriptions mot à mot. Fine-tuner un
+  HTR demande un *ground truth* de transcription séparé (d'où **Scoledit**).
+
+
+
+## Configuration
+
+### Configuration des secrets
+
+Tout passe par des **variables d'environnement** : **aucun secret ne doit être ajouté dans le code ni
+dans les YAML**. Liste complète et commentée des variables d'environnement : [`.env.example`](.env.example).
+
+| Clé | Requis pour |
+|-----|-------------|
+| `LLM_BASE_URL`, `LLM_API_KEY` | tout run |
+| `LANGFUSE_*` (URL + clés publique et secrète) | traçage des runs |
+| `S3_PREDICTIONS_PREFIX` | export des prédictions |
+| `MLFLOW_TRACKING_URI` | fine-tuning |
+
+- **Sur le SSP Cloud** : il faut stocker ces valeurs dans le **Vault Onyxia**
+  (`Mon compte` → `Vault`), puis référencer le secret au lancement du service : Onyxia
+  les injecte dans l'environnement. Les identifiants **S3 sont injectés
+  automatiquement**, il n'y a rien à configurer pour le stockage.
+- **En local** : `cp .env.example .env`, puis compléter. Ce fichier n'est jamais commité sur GitHub.
+
+### Congiguration d'une expérience (une expérience = un YAML)
+
+Un fichier dans `configs/` décrit une expérience reproductible, rangé par famille
+(`scoring/`, `htr/`, `finetune/`). Partir de
+[`configs/scoring/dictee_REFERENCE.yaml`](configs/scoring/dictee_REFERENCE.yaml),
+exhaustivement commenté ; détails dans [`configs/README.md`](configs/README.md).
+
+| Champ | Rôle |
+|-------|------|
+| `approach` | `end_to_end` ou `two_stage` |
+| `model.name` | modèle servi par llm.lab (ex. `gemma4-26b-moe`) |
+| `concurrency` | copies évaluées en parallèle (défaut 8) —> **principal levier de temps mural** |
+| `data.limit` | nombre de copies ; `null` = tout le corpus |
+| `grid.scheme` | `simplifiee` (1/9/0) ou `complete` (1/3/4/5/9/0) |
+
+
+
+## Structure du projet
+
+```
+evaluation_dictee/
+├── src/evaluation_dictee/   ← le paquet : config, data, models, pipeline, evaluation, transcription, utils
+├── scripts/                 ← points d'entrée Python (un run = un process)
+├── launchers/               ← lanceurs shell des runs longs (voir launchers/README.md)
+├── configs/                 ← une expérience = un YAML (scoring/, htr/, finetune/) + la grille de codage
+├── notebooks/               ← 03 analyse, 04 diagnostic, 05 transcription HTR
+├── website/                 ← site Quarto (archi, résultats, métriques, fine-tuning)
+├── tests/                   ← 155 tests unitaires (pytest)
+└── docs/                    ← décisions méthodologiques, grille de codage, schéma du pipeline
 ```
 
-Détails et suivi : [Runs longs](#runs-longs--le-lanceur-launcherslaunch_evalsh).
+<details>
+<summary>Détail des modules et des scripts</summary>
 
-### 5. Analyser les résultats
+```
+src/evaluation_dictee/
+├── config.py           ← configs validées (Pydantic) + secrets
+├── data/               ← chargement images (S3, TIFF 1 bit), grille, labels
+├── models/             ← interface Scorer, scorers end-to-end et two-stage
+├── pipeline/           ← prompts, évaluation + checkpointing, ré-alignement (Needleman-Wunsch)
+├── evaluation/         ← métriques, statistiques, calibration, diagnostics, rapports HTML
+├── transcription/      ← pipeline HTR indépendant (Scoledit) : loader, CER/WER, diffs
+└── utils/              ← logging, suivi Langfuse, export S3
 
-```bash
-uv sync --extra notebooks            # une seule fois (JupyterLab + matplotlib)
-uv run jupyter lab
+scripts/
+├── run_benchmark.py            ← scoring dictée (les deux approches)
+├── run_htr_benchmark.py        ← évaluation HTR Scoledit
+├── export_predictions.py       ← export d'un run terminé vers S3
+└── finetune_htr_scoledit.py    ← fine-tuning QLoRA (GPU H100)
+
+launchers/
+├── launch_eval.sh              ← run complet : détache du terminal, surveille, relance, exporte le run
+└── install_assistant.sh        ← installe Claude Code / openCode, branchés sur llm.lab
+
+.claude/skills/launch/          ← skill Claude Code   ┐ n'appellent que launch_eval.sh,
+.opencode/command/              ← commande openCode   ┘ aucune logique dupliquée
 ```
 
-| Notebook | Ce qu'il fait | Prérequis |
-|----------|---------------|-----------|
-| `03_analyse_resultats.ipynb` | métriques globales, prévalence par item (IC bootstrap), distributions, corrélation modèle vs expert, seuils critiques, export HTML DEPP | un run de scoring terminé |
-| `04_diagnostic.ipynb` | copies triées par désaccord, HTML des N pires, HTML d'une copie précise (scan + transcription + comparaison expert/modèle) | un run de scoring terminé |
-| `05_analyse_transcription_htr.ipynb` | CER/WER, distribution, HTML des N pires transcriptions et de N aléatoires | un run HTR terminé |
+</details>
 
-Changer la variable `RUN_NAME` en tête de notebook suffit pour analyser un autre run.
-Le **rapport pour la DEPP** se génère depuis la section 9 du notebook 03 :
-`data/processed/rapport_depp_<RUN>.html`, autonome (assets inlinés), prêt à envoyer.
 
----
 
-## Runs longs : le lanceur `launchers/launch_eval.sh`
+## Lancer un run complet
 
-Un benchmark complet (3469 copies × ~30 s) prend **~30 h** : il ne doit jamais dépendre
-de l'onglet du navigateur. Le lanceur est le **point d'entrée unique** — il détache le
-run, le surveille, relance les copies en échec et exporte le résultat vers S3.
+Un benchmark complet (3 469 copies × ~30 s) prend **~15 h** : il ne doit jamais
+dépendre de l'onglet du navigateur. 
+
+Il ne faut **pas lancer les copies à la main**, mais passer par
+le lanceur, qui est le **point d'entrée unique**. En effet, le lanceur **détache le run
+du terminal** (celui-ci continue donc de tourner après la fermeture de la session ou
+de l'onglet), le surveille, puis relance les copies en échec avant d'exporter le résultat
+vers S3.
 
 ```bash
 launchers/launch_eval.sh --config configs/scoring/dictee_end2end.yaml            # lancer
@@ -162,29 +237,54 @@ launchers/launch_eval.sh --config configs/scoring/dictee_end2end.yaml --stop    
 launchers/launch_eval.sh --help                                                  # toutes les options
 ```
 
-> **`--config` (et `--model-name` si utilisé) sont à répéter sur les trois commandes.**
-> Le nom d'un run est `<name>_<modèle(s)>` : sans elles, `--status` interrogerait un
-> autre run et `--stop` en arrêterait un autre. Par défaut, `--config` vaut
-> `configs/scoring/dictee_end2end.yaml`.
+> **Toujours préciser le run concerné (option `--config`)** pour toute action spécifique sur un run
+> (avec les options `--status` et `stop` par exemple)
 
-Options courantes : `--model-name <modèle>` (surcharge le YAML), `--limit N` (test
-rapide, sans export S3), `--passes N` (nombre de relances des copies en échec, défaut
-3), `--foreground` (débogage).
+Options courantes : 
 
-Sortie de `--status`, avec un débit **mesuré** sur la passe en cours :
+- `--model-name <modèle>` (surcharge le YAML), 
+- `--limit N` (test rapide, sans export S3), 
+- `--passes N` (nombre de relances des copies en échec, défaut 3), 
+- `--foreground` (débogage).
 
-```text
-Run dictee_end2end_qwen3-6-35b-moe
-✔ en cours :
-      10489  01:33  uv run scripts/run_benchmark.py --config …
-  copies      412/3469 (11%)
-  débit       464.5 copies/h (depuis 0h 53min)
-  fin estimée 2026-09-06 09:12 (dans 6h 34min)
-```
+>Sortie de `--status`, avec un débit **mesuré** sur la passe en cours :
+>
+>```text
+>Run dictee_end2end_qwen3-6-35b-moe
+>✔ en cours :
+>      10489  01:33  uv run scripts/run_benchmark.py --config …
+>  copies      412/3469 (11%)
+>  débit       464.5 copies/h (depuis 0h 53min)
+>  fin estimée 2026-09-06 09:12 (dans 6h 34min)
+>```
+>
+>Les logs sont horodatés, un par lancement : `logs/<run>_<horodatage>.log`, avec
+>`logs/<run>.latest.log` qui pointe vers le dernier. Détails des vérifications
+>effectuées au démarrage : [`launchers/README.md`](launchers/README.md).
 
-Les logs sont horodatés, un par lancement : `logs/<run>_<horodatage>.log`, avec
-`logs/<run>.latest.log` qui pointe vers le dernier. Détails des vérifications
-effectuées au démarrage : `launchers/README.md`.
+### Reprise automatique
+
+Le benchmark écrit sur disque après **chaque** copie (`flush + fsync`). 
+
+Après une interruption, relancer la même commande saute les copies déjà faites, seule la copie
+en cours est perdue. Pour repartir de zéro, supprimer le `.jsonl` (ou changer
+`config.name`).
+
+### Deux règles à ne pas enfreindre
+
+>**Ne jamais arrêter un run par son PID.** `uv run …` lance DEUX processus : le `uv`
+visible en tête de `ps`, et le `python3` qui fait réellement le travail. 
+>
+>Tuer le premier ne tue pas le second : le run paraît arrêté alors qu'il continue d'écrire
+dans le JSONL, et un nouveau lancement viendrait s'y ajouter en double. 
+>
+>-> Utiliser `--stop`, qui arrête les deux ou l'instruction : 
+`pkill -f "run_benchmark.py --config <la config>"`.
+
+> **Un seul run par fichier de sortie.** Un second run visant le même fichier s'arrête
+> sur le verrou `<sortie>.lock` : deux runs qui appendent le même JSONL dupliquent les
+> copies et faussent les métriques.
+
 
 ### Depuis un assistant de code
 
@@ -197,120 +297,150 @@ Les assistants ne font qu'appeler le lanceur, sans dupliquer la moindre logique.
 | Un autre (Cursor, Codex…) | — | lui faire lire `launchers/README.md`, ou lancer le `.sh` soi-même |
 
 Pas encore d'assistant installé ? `launchers/install_assistant.sh` l'installe et le
-branche sur **llm.lab** plutôt que sur une API payante. Détails :
-[`launchers/README.md`](launchers/README.md).
+branche sur **llm.lab** plutôt que sur une API payante.
 
-### Deux règles à ne pas enfreindre
 
-> **Ne jamais arrêter un run par son PID.** `uv run …` crée DEUX process — le wrapper
-> `uv` et le vrai `python3` ; tuer le wrapper laisse l'enfant orphelin continuer
-> d'écrire dans le JSONL. Utiliser `--stop`, ou à défaut
-> `pkill -f "run_benchmark.py --config <la config>"`.
+## Reproduire les résultats
 
-> **Un seul run par fichier de sortie.** Un second run visant le même fichier s'arrête
-> sur le verrou `<sortie>.lock` : deux runs qui appendent le même JSONL dupliquent les
-> copies et faussent les métriques.
+Le pipeline complet, de l'environnement vierge aux figures publiées.
 
-Pour un run vraiment interactif (démo, mise au point d'un prompt), `screen` reste
-disponible sur Onyxia — `tmux`, lui, n'y est pas installable.
+**1. Environnement et accès** : [Installation](#installation) puis
+[Configuration](#configuration) de l'environnement. Pousser une fois les prompts à utiliser et les coûts dans
+Langfuse pour garder une trace des évolutions :
 
----
-
-## Configurer une expérience
-
-Un YAML dans `configs/` = une expérience reproductible. Les configs sont rangées par
-famille (`scoring/`, `htr/`, `finetune/`) et documentées dans
-[`configs/README.md`](configs/README.md) ; le modèle exhaustivement commenté à copier
-est [`configs/scoring/dictee_REFERENCE.yaml`](configs/scoring/dictee_REFERENCE.yaml).
-
-| Champ | Rôle |
-|-------|------|
-| `approach` | `end_to_end` ou `two_stage` |
-| `model.name` | modèle servi par llm.lab (ex. `gemma4-26b-moe`) |
-| `concurrency` | copies évaluées en parallèle (défaut 8) |
-| `data.images_path` / `data.labels_path` | imagettes et CSV des codes experts (local ou `s3://…`) |
-| `data.grid_path` | grille de codage (`configs/grille_dictee_2015.json`) |
-| `data.limit` | nombre de copies ; `null` = tout le corpus |
-| `grid.scheme` | `simplifiee` (1/9/0) ou `complete` (1/3/4/5/9/0) |
-| `prompt.method` | `C` end-to-end (image → code) |
-| `prompt.read_final_state` | règle des ratures : lire l'état final corrigé |
-
----
-
-## Structure du dépôt
-
-```
-evaluation_dictee/
-├── CLAUDE.md                  ← contexte projet pour humains et IA
-├── configs/                   ← une expérience = un YAML (voir configs/README.md)
-│   ├── grille_dictee_2015.json    ← grille de codage (mot attendu + fautes connues)
-│   └── scoring|htr|finetune/      ← configs de référence, par famille
-├── src/evaluation_dictee/
-│   ├── config.py              ← configs validées (Pydantic) + secrets
-│   ├── data/                  ← chargement images (S3, TIFF 1 bit), grille, labels
-│   ├── models/                ← interface Scorer, scorers end-to-end et two-stage
-│   ├── pipeline/              ← prompts, évaluation + checkpointing, ré-alignement (Needleman-Wunsch)
-│   ├── evaluation/            ← métriques, statistiques, calibration, diagnostics, rapports HTML
-│   ├── transcription/         ← pipeline HTR indépendant (Scoledit) : loader, CER/WER, diffs
-│   └── utils/                 ← logging, suivi Langfuse, export S3
-├── scripts/                   ← points d'entrée Python (un run = un process)
-│   ├── run_benchmark.py       ← scoring dictée (les deux approches)
-│   ├── run_htr_benchmark.py   ← évaluation HTR Scoledit
-│   ├── export_predictions.py  ← export d'un run terminé vers S3
-│   └── finetune_htr_scoledit.py   ← fine-tuning QLoRA (GPU H100)
-├── launchers/                 ← scripts shell (bash seul ; voir launchers/README.md)
-│   ├── launch_eval.sh         ← run complet : détache, surveille, relance, exporte
-│   └── install_assistant.sh   ← installe Claude Code / openCode, branchés sur llm.lab
-├── .claude/skills/launch/     ← skill Claude Code   ┐ n'appellent que launch_eval.sh,
-├── .opencode/command/         ← commande openCode   ┘ aucune logique dupliquée
-├── notebooks/                 ← 03 analyse, 04 diagnostic, 05 transcription HTR
-├── website/                   ← site Quarto (archi, résultats, métriques, fine-tuning)
-├── tests/                     ← 155 tests unitaires (pytest)
-└── docs/                      ← décisions, grille de codage, schéma du pipeline
+```bash
+# --env-file .env : Langfuse lit ses clés dans os.environ, que .env n'alimente pas seul.
+uv run --env-file .env add-langfuse-prompt       # prompts d'évaluation
+uv run --env-file .env add-langfuse-models       # coût théorique /1M tokens
 ```
 
----
+**2. Vérifier que tout répond** : S3 (voir [Données](#données)), le modèle, les tests :
 
-## Développement
+```bash
+uv run python -c "from openai import OpenAI; from evaluation_dictee.config import Secrets; \
+    s=Secrets(); c=OpenAI(base_url=s.llm_base_url, api_key=s.llm_api_key); \
+    print(c.chat.completions.create(model='gemma4-26b-moe', \
+    messages=[{'role':'user','content':'Dis bonjour'}], max_tokens=10).choices[0].message.content)"
+uv run pytest -q
+```
+
+**3. Relancer les évaluations** : une config = une expérience ; les runs complets
+passent par le [lanceur](#lancer-un-run-complet).
+
+```bash
+launchers/launch_eval.sh --config configs/scoring/dictee_end2end.yaml    # ~30 h
+launchers/launch_eval.sh --config configs/scoring/dictee_two_stage.yaml  # ~30 h
+uv run scripts/run_htr_benchmark.py --config configs/htr/htr_REFERENCE.yaml
+```
+
+**4. Exporter vers S3** : le pipeline écrit en local (append + fsync, pour la reprise) ;
+l'export permet de rejouer notebooks et site sans relancer le pipeline.
+`launch_eval.sh` le fait seul ; à la main :
+
+```bash
+uv run scripts/export_predictions.py --run-name dictee_two_stage_gemma4-26b-moe
+uv run scripts/export_predictions.py --config configs/htr/htr_REFERENCE.yaml --htr
+```
+
+**5. Régénérer les analyses** : changer la variable `RUN_NAME` en tête de notebook
+suffit pour analyser un autre run.
+
+```bash
+uv sync --extra notebooks && uv run jupyter lab
+```
+
+| Notebook | Ce qu'il fait | Prérequis |
+|----------|---------------|-----------|
+| `03_analyse_resultats.ipynb` | métriques globales, prévalence par item (IC bootstrap), distributions, corrélation modèle vs expert, seuils critiques, export HTML DEPP | un run de scoring terminé |
+| `04_diagnostic.ipynb` | copies triées par désaccord, HTML des N pires, HTML d'une copie précise (scan + transcription + comparaison expert/modèle) | un run de scoring terminé |
+| `05_analyse_transcription_htr.ipynb` | CER/WER, distribution, HTML des N pires transcriptions et de N aléatoires | un run HTR terminé |
+
+Le **rapport pour la DEPP** se génère depuis la section 9 du notebook 03 :
+`data/processed/rapport_depp_<RUN>.html`, autonome (assets inlinés), prêt à envoyer.
+
+**6. Republier le site** — les pages « Résultats » et « Écarts » relisent les
+prédictions exportées sur S3 au moment du rendu.
+
+```bash
+uv sync --extra website
+quarto preview website     # aperçu local (rechargement à chaud)
+quarto render website      # génère website/_site/
+```
+
+La publication sur GitHub Pages est automatique à chaque *push* sur `main`
+(`.github/workflows/site.yml`). 
+
+
+
+## Contribuer
+
+### Workflow
+
+1. Partir de `main` à jour, créer une branche : `git switch -c <type>-<sujet>`
+   (ex. `feat-scorer-multimodal`, `docs-nettoyage-readme`).
+2. Développer, puis **vérifier localement avant de pousser** (voir ci-dessous).
+3. Ouvrir une *pull request* vers `main`. La [CI](.github/workflows/ci.yml) rejoue
+   lint, formatage, typage (non bloquant) et tests.
+
+**Messages de commit** en français, format `type: description` — `feat:`, `fix:`,
+`docs:`, `refactor:`, `test:`.
+
+### Vérifications locales
 
 ```bash
 uv run ruff format src tests scripts        # formatage
 uv run ruff check src tests scripts         # lint
-uv run pytest                               # toute la suite
+uv run mypy src                             # typage
+uv run pytest                               # toute la suite (155 tests)
 uv run pytest tests/test_alignment.py -v    # un fichier
 uv run pytest -k "chain_of_thought"         # par motif
 ```
 
-**Ne jamais committer** les données (`data/`), les checkpoints, les logs (`logs/`) ni
-les `.env` : tout est dans le `.gitignore`.
+### Conventions
 
----
+Détaillées dans [CLAUDE.md](CLAUDE.md) § 8. L'essentiel :
+
+- **Python ≥ 3.11**, dépendances gérées avec **uv exclusivement**.
+- Annoter les fonctions publiques ; docstrings **en français**, style Google, court.
+- **Pas de chemin en dur** : tout passe par `configs/*.yaml` et `config.py`.
+- **Pas de secret dans le code** : variables d'environnement uniquement.
+- **Reproductibilité** : une expérience = une config versionnée + un run tracé dans
+  Langfuse. Fixer les graines aléatoires.
+- Les `notebooks/` servent à explorer : dès qu'un bout de code devient réutilisable,
+  le déplacer dans `src/`.
+
+**⚠️ Ne jamais committer de données sur GitHub, ni les checkpoitns, les logs ou le fichier *.env*.**
+
+### Par où commencer
+
+Lire [CLAUDE.md](CLAUDE.md), puis suivre le fil de `scripts/run_benchmark.py` : il lit
+une config, charge les données, appelle un modèle, calcule les métriques. En cas de
+doute sur une décision méthodologique, la réponse est dans CLAUDE.md ou
+[`docs/decisions.md`](docs/decisions.md).
+
+
+## Licence
+
+**Le code** de ce dépôt est sous licence **MIT** — voir [`LICENSE`](LICENSE).
+Copyright (c) 2026 Insee et DEPP (Ministère de l'Éducation nationale).
+
+**Les données** ne sont pas couvertes par cette licence. Produites et détenues par la
+DEPP, elles ne sont pas versionnées ici et restent soumises au cadre d'accès de la
+DEPP et du SSP Cloud — voir [Données](#données).
+
+
+
 
 ## Aide-mémoire
 
 ```bash
 # ─────────── Installation & configuration (une seule fois) ───────────
 uv sync                                          # environnement Python (dev inclus)
-cp .env.example .env && nano .env                # hors Onyxia seulement (sinon : Vault)
+cp .env.example .env && $EDITOR .env             # hors Onyxia seulement (sinon : Vault)
+uv run --env-file .env add-langfuse-prompt       # pousse les prompts d'évaluation
+uv run --env-file .env add-langfuse-models       # coût théorique /1M tokens
 launchers/install_assistant.sh --check           # (option) assistant de code : tester l'endpoint
 launchers/install_assistant.sh --endpoint "$LLM_BASE_URL"   # installer + brancher sur llm.lab
-
-# Langfuse, une seule fois. --env-file .env : Langfuse lit ses clés dans os.environ,
-# que .env n'alimente pas seul.
-uv run --env-file .env add-langfuse-prompt       # pousse les prompts d'évaluation
-uv run --env-file .env add-langfuse-models       # coût théorique /1M tokens (GPU amorti,
-                                                 # ajustable dans utils/add_langfuse_models.py)
-
-# ─────────── Vérifier que tout marche ───────────
-# S3 :
-uv run python -c "from evaluation_dictee.data.loaders import load_labels; \
-    print(len(load_labels('s3://projet-production-ecrits-depp/resultat_dictee_2015.csv')), 'copies')"
-# Modèle :
-uv run python -c "from openai import OpenAI; from evaluation_dictee.config import Secrets; \
-    s=Secrets(); c=OpenAI(base_url=s.llm_base_url, api_key=s.llm_api_key); \
-    print(c.chat.completions.create(model='gemma4-26b-moe', \
-    messages=[{'role':'user','content':'Dis bonjour'}], max_tokens=10).choices[0].message.content)"
-uv run pytest -q
 
 # ─────────── Runs ───────────
 # Run COMPLET (~3469 copies) — la voie normale. Répéter --config (et --model-name)
@@ -330,8 +460,6 @@ tail -f logs/<run>.latest.log                    # log du dernier lancement
 cat data/processed/<run>_failed_copies.txt       # copies en échec du dernier passage
 
 # ─────────── Export des prédictions vers S3 ───────────
-# Le pipeline écrit en local (append + fsync, pour la reprise) ; l'export permet de
-# rejouer notebooks et site sans relancer le pipeline. launch_eval.sh le fait seul.
 uv run scripts/export_predictions.py --run-name dictee_two_stage_gemma4-26b-moe
 uv run scripts/export_predictions.py --config configs/htr/htr_REFERENCE.yaml --htr
 eval-ecrit export configs/scoring/dictee_REFERENCE.yaml     # équivalent via la CLI installée
@@ -343,10 +471,3 @@ uv sync --extra notebooks && uv run jupyter lab  # notebooks 03 / 04 / 05
 quarto preview website                           # aperçu local (rechargement à chaud)
 quarto render website                            # génère website/_site/
 ```
-
----
-
-## ⚠️ Données sensibles
-
-Les copies sont des **écritures d'élèves mineurs**. Elles **ne quittent jamais le
-SSP Cloud** et **ne sont jamais commitées**. Le dossier `/data/` est ignoré par Git.
