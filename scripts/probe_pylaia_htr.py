@@ -52,6 +52,26 @@ HAUTEUR_LIGNE = 128
 #: Fichiers attendus dans un dépôt de modèle PyLaia publié par Teklia.
 FICHIERS_MODELE = ("syms.txt", "model", "weights.ckpt")
 
+#: Interligne Seyès (px) séparant les deux résolutions de Scoledit (≈ 47 px / ≈ 171 px).
+SEUIL_HAUTE_RESOLUTION = 100
+
+#: Réglages du dérèglage et de la segmentation, par résolution de scan. « basse » :
+#: les valeurs par défaut des fonctions, mises au point sur les scans à ≈ 47 px
+#: d'interligne. « haute » : même dérèglage — agrandir `longueur_v` en proportion
+#: (40 → 145) laisse survivre les réglures verticales, que l'inclinaison du scan
+#: découpe en tronçons courts, et fusionne la page en 1 à 2 bandes —, mais
+#: segmentation agrandie (≈ ×2) pour ne plus éclater une ligne en plusieurs bandes.
+REGLAGES: dict[str, dict[str, dict[str, int]]] = {
+    "basse": {
+        "reglures": {"longueur_v": 40, "longueur_h": 30, "epaisseur_max": 6},
+        "segmentation": {"hauteur_min": 20, "marge": 6, "lissage": 5},
+    },
+    "haute": {
+        "reglures": {"longueur_v": 40, "longueur_h": 30, "epaisseur_max": 6},
+        "segmentation": {"hauteur_min": 40, "marge": 12, "lissage": 10},
+    },
+}
+
 
 @dataclass
 class ResultatCopie:
@@ -153,6 +173,55 @@ def supprimer_reglures(
 
     reglures = (longues_v & ~epais_h) | (longues_h & ~epais_v)
     return Image.fromarray(np.where(encre & ~reglures, arr, 255).astype(np.uint8))
+
+
+# ───────────────────────── Normalisation de l'échelle ─────────────────────────
+
+
+def estimer_interligne(image: Image.Image, mini: int = 15, maxi: int = 250) -> int:
+    """Estime l'interligne Seyès d'une page, en pixels, par autocorrélation.
+
+    Scoledit mélange deux résolutions de scan (≈ 550 px et ≈ 2 100 px de large, soit
+    un interligne de ≈ 47 px contre ≈ 171 px). Les réglures imprimées, régulières,
+    donnent au profil vertical de l'encre claire une période nette : le premier pic
+    de son autocorrélation. On la mesure sur la page BRUTE, avant dérèglage.
+
+    Args:
+        image: Page en niveaux de gris, réglures comprises.
+        mini: Plus petite période cherchée, en pixels.
+        maxi: Plus grande période cherchée, en pixels.
+
+    Returns:
+        L'interligne estimé, en pixels.
+    """
+    arr = np.asarray(image.convert("L"))
+    profil = (arr < 200).sum(axis=1).astype(float)
+    profil -= profil.mean()
+    auto = np.correlate(profil, profil, mode="full")[len(profil) - 1 :]
+    maxi = min(maxi, len(auto) - 1)
+    return int(np.argmax(auto[mini:maxi]) + mini)
+
+
+def normaliser_echelle(image: Image.Image, interligne_cible: int) -> Image.Image:
+    """Remet une page à l'échelle pour que son interligne Seyès vaille `interligne_cible`.
+
+    Tous les réglages du prétraitement (longueur des réglures, épaisseur d'un trait,
+    hauteur minimale d'une bande…) sont en pixels absolus. Sans normalisation, ils ne
+    conviennent qu'à une seule résolution : sur les scans haute résolution, chaque
+    ligne d'écriture était éclatée en plusieurs bandes et le CER dépassait 75 %.
+
+    Args:
+        image: Page en niveaux de gris, réglures comprises.
+        interligne_cible: Interligne visé, en pixels.
+
+    Returns:
+        La page redimensionnée (inchangée si l'écart est inférieur à 10 %).
+    """
+    facteur = interligne_cible / estimer_interligne(image)
+    if abs(facteur - 1) < 0.1:
+        return image
+    taille = (max(1, round(image.width * facteur)), max(1, round(image.height * facteur)))
+    return image.resize(taille, Image.Resampling.LANCZOS)
 
 
 # ───────────────────────── Segmentation en lignes ─────────────────────────
@@ -342,11 +411,87 @@ def decoder(
 # ───────────────────────── Sonde ─────────────────────────
 
 
+def _decouper_polygone(page: Image.Image, polygone: list[list[int]], marge: int = 6) -> Image.Image:
+    """Extrait une ligne délimitée par un polygone et la met à `HAUTEUR_LIGNE`.
+
+    Le rectangle englobant d'une ligne penchée mord sur ses voisines : on blanchit
+    donc tout ce qui est hors du polygone (dilaté de `marge`) avant de rogner.
+
+    Args:
+        page: Page en niveaux de gris.
+        polygone: Sommets (x, y) du contour de la ligne, en pixels de la page.
+        marge: Dilatation du polygone, en pixels, pour ne pas rogner les jambages.
+
+    Returns:
+        L'imagette de ligne, redimensionnée à `HAUTEUR_LIGNE` de haut.
+    """
+    from PIL import ImageDraw, ImageFilter
+
+    masque = Image.new("L", page.size, 0)
+    ImageDraw.Draw(masque).polygon([tuple(pt) for pt in polygone], fill=255)
+    if marge > 0:
+        masque = masque.filter(ImageFilter.MaxFilter(2 * marge + 1))
+    fond = Image.new("L", page.size, 255)
+    ligne = Image.composite(page.convert("L"), fond, masque).crop(masque.getbbox())
+    ratio = HAUTEUR_LIGNE / ligne.height
+    return ligne.resize((max(1, int(ligne.width * ratio)), HAUTEUR_LIGNE), Image.Resampling.LANCZOS)
+
+
+def segmenter_doc_ufcn(
+    pages: dict[str, Image.Image], travail_dir: Path, ufcn_python: str, modele: str
+) -> dict[str, list[list[list[int]]]]:
+    """Détecte les lignes de toutes les pages avec Doc-UFCN, en un seul sous-processus.
+
+    Doc-UFCN tourne dans son propre environnement (torch 2.x, incompatible avec
+    PyLaia) : on lui passe les pages sur disque et on relit ses polygones en JSON.
+
+    Args:
+        pages: {scan: page en niveaux de gris}, telle que Doc-UFCN doit la voir.
+        travail_dir: Dossier où écrire les pages et le JSON de sortie.
+        ufcn_python: Interpréteur de l'environnement Doc-UFCN.
+        modele: Nom du modèle `Teklia/doc-ufcn-<nom>`.
+
+    Returns:
+        {scan: polygones des lignes, triés de haut en bas}.
+
+    Raises:
+        SystemExit: Si Doc-UFCN sort en erreur.
+    """
+    pages_dir = travail_dir / "pages"
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    for scan, page in pages.items():
+        page.convert("L").save(pages_dir / f"{scan}.png")
+    sortie = travail_dir / "polygones_doc_ufcn.json"
+    script = Path(__file__).with_name("segment_doc_ufcn.py")
+    commande = [ufcn_python, str(script), str(pages_dir), str(sortie), "--modele", modele]
+    logger.info("Segmentation : %s", " ".join(commande))
+    proc = subprocess.run(commande, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise SystemExit(f"Doc-UFCN a échoué (code {proc.returncode}) :\n{proc.stderr[-4000:]}")
+
+    brut = json.loads(sortie.read_text(encoding="utf-8"))
+    return {
+        scan: [
+            ligne["polygone"]
+            for ligne in sorted(
+                lignes, key=lambda li: float(np.mean([y for _, y in li["polygone"]]))
+            )
+        ]
+        for scan, lignes in brut.items()
+    }
+
+
 def preparer_lignes(
     echantillons: list[ScoledtSample],
     lignes_dir: Path,
     max_lignes: int,
     deregler: bool = True,
+    interligne_cible: int | None = None,
+    segmenteur: str = "projection",
+    ufcn_python: str = "python",
+    ufcn_modele: str = "generic-historical-line",
+    ufcn_page_nette: bool = False,
+    reglages_par_resolution: bool = False,
 ) -> dict[str, list[str]]:
     """Segmente chaque copie et écrit les imagettes de lignes sur disque.
 
@@ -354,13 +499,26 @@ def preparer_lignes(
         echantillons: Échantillons Scoledit à traiter.
         lignes_dir: Dossier de destination des imagettes.
         max_lignes: Nombre maximal de lignes conservées par copie (garde-fou).
-        deregler: Retirer les réglures Seyès avant de segmenter.
+        deregler: Retirer les réglures Seyès. Avec Doc-UFCN, la détection se fait
+            sur la page brute et seul le découpage des lignes lit la page nettoyée.
+        interligne_cible: Remettre chaque page à cet interligne avant tout
+            traitement (voir `normaliser_echelle`). `None` : pas de normalisation.
+        segmenteur: `projection` (profil d'encre) ou `doc-ufcn` (réseau Teklia).
+        ufcn_python: Interpréteur de l'environnement Doc-UFCN.
+        ufcn_modele: Modèle Doc-UFCN.
+        ufcn_page_nette: Donner à Doc-UFCN la page dérèglée plutôt que la page brute.
+        reglages_par_resolution: Choisir les réglages `REGLAGES` « basse » ou
+            « haute » selon l'interligne mesuré de chaque page (voir
+            `SEUIL_HAUTE_RESOLUTION`). Sinon, réglages « basse » partout.
 
     Returns:
         Dictionnaire {scan: identifiants des imagettes, dans l'ordre de lecture}.
     """
     lignes_dir.mkdir(parents=True, exist_ok=True)
     par_copie: dict[str, list[str]] = {}
+    brutes: dict[str, Image.Image] = {}
+    nettes: dict[str, Image.Image] = {}
+    profils: dict[str, str] = {}
     for ech in echantillons:
         try:
             page = load_image(ech.image_path)
@@ -368,16 +526,41 @@ def preparer_lignes(
             logger.warning("Image illisible (%s) : %s", ech.scan, err)
             par_copie[ech.scan] = []
             continue
-        if deregler:
-            page = supprimer_reglures(page)
-        lignes = segmenter_lignes(page)[:max_lignes]
+        if interligne_cible is not None:
+            page = normaliser_echelle(page, interligne_cible)
+        profil = "basse"
+        if reglages_par_resolution:
+            interligne = estimer_interligne(page)
+            profil = "haute" if interligne > SEUIL_HAUTE_RESOLUTION else "basse"
+            logger.info("%s : interligne %d px → réglages « %s »", ech.scan, interligne, profil)
+        profils[ech.scan] = profil
+        brutes[ech.scan] = page
+        nettes[ech.scan] = (
+            supprimer_reglures(page, **REGLAGES[profil]["reglures"]) if deregler else page
+        )
+
+    if segmenteur == "doc-ufcn":
+        polygones = segmenter_doc_ufcn(
+            nettes if ufcn_page_nette else brutes, lignes_dir.parent, ufcn_python, ufcn_modele
+        )
+        lignes_par_copie = {
+            scan: [_decouper_polygone(nettes[scan], p) for p in polygones.get(scan, [])]
+            for scan in nettes
+        }
+    else:
+        lignes_par_copie = {
+            scan: segmenter_lignes(page, **REGLAGES[profils[scan]]["segmentation"])
+            for scan, page in nettes.items()
+        }
+
+    for scan, lignes in lignes_par_copie.items():
         identifiants = []
-        for i, ligne in enumerate(lignes):
-            identifiant = f"{ech.scan}__{i:03d}"
+        for i, ligne in enumerate(lignes[:max_lignes]):
+            identifiant = f"{scan}__{i:03d}"
             ligne.convert("L").save(lignes_dir / f"{identifiant}.jpg", quality=95)
             identifiants.append(identifiant)
-        par_copie[ech.scan] = identifiants
-        logger.info("%s : %d lignes", ech.scan, len(identifiants))
+        par_copie[scan] = identifiants
+        logger.info("%s : %d lignes", scan, len(identifiants))
     return par_copie
 
 
@@ -450,6 +633,40 @@ def main() -> None:
         "nettement plus stable, CER moyen 74,6%% → 71,5%% sur 5 copies CE1).",
     )
     parser.add_argument(
+        "--interligne-cible",
+        type=int,
+        default=None,
+        help="Remettre chaque page à cet interligne Seyès (px) avant traitement. "
+        "Par défaut : pas de normalisation.",
+    )
+    parser.add_argument(
+        "--segmenteur",
+        choices=("projection", "doc-ufcn"),
+        default="projection",
+        help="Découpage en lignes : profil d'encre (défaut) ou réseau Doc-UFCN de Teklia.",
+    )
+    parser.add_argument(
+        "--ufcn-python",
+        default="python",
+        help="Interpréteur de l'environnement Doc-UFCN (venv Python 3.10 dédié).",
+    )
+    parser.add_argument(
+        "--ufcn-modele",
+        default="generic-historical-line",
+        help="Modèle Teklia/doc-ufcn-<nom> (generic-historical-line, norhand-v1-line).",
+    )
+    parser.add_argument(
+        "--ufcn-page-nette",
+        action="store_true",
+        help="Donner à Doc-UFCN la page dérèglée (défaut : page brute).",
+    )
+    parser.add_argument(
+        "--reglages-par-resolution",
+        action="store_true",
+        help="Adapter dérèglage et segmentation à la résolution de chaque scan "
+        "(deux jeux de réglages, voir REGLAGES). Par défaut : réglages basse résolution.",
+    )
+    parser.add_argument(
         "--extra",
         nargs=argparse.REMAINDER,
         default=[],
@@ -469,7 +686,16 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     lignes_dir = args.out_dir / "lignes"
     par_copie = preparer_lignes(
-        echantillons, lignes_dir, args.max_lignes, deregler=not args.garder_reglures
+        echantillons,
+        lignes_dir,
+        args.max_lignes,
+        deregler=not args.garder_reglures,
+        interligne_cible=args.interligne_cible,
+        segmenteur=args.segmenteur,
+        ufcn_python=args.ufcn_python,
+        ufcn_modele=args.ufcn_modele,
+        ufcn_page_nette=args.ufcn_page_nette,
+        reglages_par_resolution=args.reglages_par_resolution,
     )
 
     tous = [ident for idents in par_copie.values() for ident in idents]
