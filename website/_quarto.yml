@@ -24,7 +24,7 @@ website:
   description: "Coder automatiquement la dictée manuscrite d'élèves avec des modèles d'IA, et en mesurer la fiabilité. DEPP × SSP Lab (INSEE)."
   page-footer:
     left: "DEPP × SSP Lab (INSEE)"
-    right: "Construit avec [Quarto](https://quarto.org)"
+    right: "Construit avec [Quarto](https://quarto.org) · 🤖 Generated with [Claude Code](https://claude.com/fr/product/claude-code)"
   navbar:
     background: primary
     search: true

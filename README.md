@@ -471,3 +471,7 @@ uv sync --extra notebooks && uv run jupyter lab  # notebooks 03 / 04 / 05
 quarto preview website                           # aperçu local (rechargement à chaud)
 quarto render website                            # génère website/_site/
 ```
+
+---
+
+🤖 Generated with [Claude Code](https://claude.com/fr/product/claude-code)
