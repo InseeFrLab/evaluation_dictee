@@ -1,6 +1,6 @@
 ---
 title: "Résultats"
-subtitle: "Deux approches, plusieurs modèles, une seule grille de métriques"
+subtitle: "Les résultats avec les deux approches et plusieurs modèles"
 include-after-body: js/vues-modeles.html
 ---
 

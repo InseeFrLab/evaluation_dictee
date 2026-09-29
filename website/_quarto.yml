@@ -39,6 +39,8 @@ website:
         file: evaluation.qmd
       - text: "Résultats"
         file: resultats.qmd
+      - text: "Publications DEPP"
+        file: depp.qmd
       - text: "Fine-tuning"
         file: finetuning.qmd
       - text: "Présentations"

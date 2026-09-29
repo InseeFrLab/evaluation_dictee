@@ -173,3 +173,79 @@
   font-style: italic;
   color: #5a6b7a;
 }
+
+/* ── Taux de réussite par phrase de la page « Publications DEPP » ─────────────
+   Mise en page de la figure 3 de la note DEPP : mots en colonnes, sources en
+   lignes. Gris = publié par la DEPP, gras = codage expert, couleur = écart du
+   modèle à l'expert (bleu : il valide trop, orange : il sanctionne trop). */
+
+.table-dictee {
+  width: auto;
+  margin-bottom: 1.4rem;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.table-dictee th,
+.table-dictee td {
+  padding: 0.2rem 0.45rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.table-dictee thead th {
+  color: #1f4e79;
+  border-bottom: 2px solid #1f4e79;
+}
+
+.table-dictee tbody th {
+  text-align: left;
+  font-weight: 600;
+}
+
+.table-dictee .ligne-publiee {
+  color: #7a7a7a;
+}
+
+.table-dictee .ligne-expert {
+  font-weight: 700;
+  border-top: 2px solid #1f4e79;
+}
+
+.table-dictee .ligne-modele th {
+  color: #c44536;
+}
+
+/* Le sélecteur `.table-dictee td.…` passe devant la règle Bootstrap
+   `.table>:not(caption)>*>*`, qui sinon impose un fond blanc aux cellules. */
+.ecart-plus-fort,
+.table-dictee td.ecart-plus-fort { background-color: #9ec5e8; }
+.ecart-plus-leger,
+.table-dictee td.ecart-plus-leger { background-color: #dcebf7; }
+.ecart-moins-leger,
+.table-dictee td.ecart-moins-leger { background-color: #fbe3cc; }
+.ecart-moins-fort,
+.table-dictee td.ecart-moins-fort { background-color: #f2b279; }
+
+/* Mots de couleur cités dans le texte, affichés dans la couleur qu'ils désignent. */
+.mot-gris { color: #7a7a7a; font-weight: 600; }
+
+.mot-couleur {
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.legende-ecarts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.8rem 0;
+  font-size: 0.85rem;
+}
+
+.legende-ecarts span {
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+}

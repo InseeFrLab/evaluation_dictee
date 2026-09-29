@@ -1,0 +1,425 @@
+---
+title: "Publications DEPP"
+subtitle: "Tableaux publiés sur les évaluations passées, comparés aux prédictions des modèles"
+include-after-body: js/vues-modeles.html
+---
+
+```{python}
+#| echo: false
+#| warning: false
+# Tableaux publiés : définis ci-dessous (valeurs reprises de la Note d'Information 22.37).
+# Prédictions : relues comme sur la page Résultats (`_analyse.py`), sans
+# réexécuter aucun pipeline.
+import sys
+
+sys.path.insert(0, ".")
+
+import pandas as pd
+
+import _analyse as A
+
+# Tableaux publiés par la DEPP, repris à l'identique.
+# Source : Note d'Information n° 22.37, décembre 2022, « Les performances en
+# orthographe des élèves de CM2 toujours en baisse, mais de manière moins marquée
+# en 2021 » (enquête Orthographe 1987, 2007, 2015, 2021).
+# https://www.education.gouv.fr/sites/default/files/document/NI%2022.37-329439.pdf
+# Champ des chiffres publiés : France métropolitaine, élèves de CM2, secteur public.
+# Toutes les valeurs sont en pourcentage, sauf moyennes et écarts-types (erreurs).
+
+#: Référence affichée sous chaque tableau repris.
+SOURCE_NI_2237 = (
+    "DEPP, enquête Orthographe 1987, 2007, 2015, 2021. "
+    "[Note d'Information n° 22.37](https://www.education.gouv.fr/sites/default/"
+    "files/document/NI%2022.37-329439.pdf), décembre 2022"
+)
+
+ANNEES = [1987, 2007, 2015, 2021]
+
+#: Seuils de la figure 1 : (libellé, comparaison, seuil).
+SEUILS = [
+    ("≤ 2 erreurs", "le", 2),
+    ("≤ 5 erreurs", "le", 5),
+    ("≤ 10 erreurs", "le", 10),
+    ("≥ 15 erreurs", "ge", 15),
+    ("≥ 25 erreurs", "ge", 25),
+]
+
+#: Figure 1 : répartition du nombre d'erreurs obtenues à la dictée (en %).
+REPARTITION: dict[int, list[float]] = {
+    1987: [12.9, 30.7, 58.1, 26.2, 6.9],
+    2007: [5.8, 15.6, 36.6, 45.7, 13.2],
+    2015: [2.0, 7.7, 24.4, 59.4, 22.7],
+    2021: [1.9, 7.0, 21.9, 63.0, 27.5],
+}
+
+#: Figure 4, ligne « Ensemble (secteur public) » : (moyenne, écart-type).
+MOYENNE_ECART_TYPE: dict[int, tuple[float, float]] = {
+    1987: (10.7, 8.4),
+    2007: (14.7, 9.1),
+    2015: (18.0, 9.9),
+    2021: (19.4, 11.0),
+}
+
+#: Figure 3 : taux de réussite par item (en %), dans l'ordre de la dictée.
+#: Chaque entrée : (mot, [1987, 2007, 2015, 2021]).
+REUSSITE_PAR_ITEM: list[tuple[str, list[float]]] = [
+    ("Le", [99.1, 99.5, 99.5, 97.6]),
+    ("soir", [98.7, 96.3, 95.0, 94.1]),
+    ("tombait", [87.0, 63.0, 55.7, 56.9]),
+    (".", [97.2, 97.5, 96.7, 96.7]),
+    ("Papa", [96.9, 95.8, 94.4, 92.3]),
+    ("et", [99.0, 98.9, 98.4, 97.6]),
+    ("maman", [99.5, 99.3, 99.5, 98.8]),
+    (",", [95.4, 98.2, 97.4, 96.3]),
+    ("inquiets", [46.2, 32.4, 25.5, 25.3]),
+    (",", [90.8, 95.6, 94.3, 90.8]),
+    ("se", [96.1, 92.6, 88.6, 89.7]),
+    ("demandaient", [70.5, 48.9, 40.5, 42.8]),
+    ("pourquoi", [93.4, 91.6, 89.2, 84.9]),
+    ("leurs", [73.8, 63.1, 60.0, 55.3]),
+    ("quatre", [74.0, 77.4, 69.6, 66.6]),
+    ("garçons", [93.5, 83.1, 77.8, 76.1]),
+    ("n'", [96.1, 96.0, 92.5, 87.9]),
+    ("étaient", [83.1, 60.6, 50.8, 51.9]),
+    ("pas", [98.7, 98.8, 97.5, 96.7]),
+    ("rentrés", [66.7, 45.5, 34.9, 36.3]),
+    (".", [97.3, 98.1, 95.6, 93.4]),
+    ("-", [93.8, 91.5, 89.6, 82.5]),
+    ("Les", [97.4, 97.1, 94.6, 90.6]),
+    ("gamins", [91.2, 86.5, 85.4, 81.8]),
+    ("se", [92.8, 87.5, 86.3, 84.5]),
+    ("sont", [97.1, 94.0, 93.7, 90.6]),
+    ("certainement", [61.4, 49.9, 47.8, 43.1]),
+    ("perdus", [69.7, 46.5, 35.4, 35.6]),
+    (",", [91.5, 93.8, 90.0, 86.7]),
+    ("dit", [97.7, 95.1, 89.3, 87.1]),
+    ("maman", [99.5, 99.2, 98.3, 97.2]),
+    (".", [97.2, 97.0, 95.1, 94.8]),
+    ("S'", [87.9, 72.0, 62.1, 57.5]),
+    ("ils", [75.4, 56.6, 50.5, 53.2]),
+    ("n'", [90.5, 82.5, 76.5, 75.2]),
+    ("ont", [89.1, 78.0, 71.6, 71.9]),
+    ("pas", [99.3, 98.3, 98.5, 97.4]),
+    ("encore", [92.7, 88.3, 84.6, 82.0]),
+    ("retrouvé", [47.7, 44.2, 38.0, 40.2]),
+    ("leur", [89.1, 80.4, 76.3, 79.5]),
+    ("chemin", [92.2, 85.6, 79.9, 80.3]),
+    (",", [91.9, 91.7, 89.9, 88.0]),
+    ("nous", [98.6, 97.5, 96.5, 95.4]),
+    ("les", [98.8, 97.8, 97.6, 96.4]),
+    ("verrons", [60.6, 44.0, 34.8, 36.9]),
+    ("arriver", [54.5, 46.0, 43.2, 46.7]),
+    ("très", [92.8, 88.7, 83.0, 79.5]),
+    ("fatigués", [66.4, 45.5, 38.5, 35.8]),
+    ("à", [95.6, 90.9, 86.7, 86.1]),
+    ("la", [99.3, 98.9, 98.4, 97.7]),
+    ("maison", [97.9, 97.2, 95.9, 94.5]),
+    (".", [96.9, 98.2, 96.5, 95.7]),
+    ("-", [93.3, 93.3, 90.6, 86.4]),
+    ("Pourquoi", [92.1, 90.2, 85.5, 79.3]),
+    ("ne", [98.5, 98.5, 97.7, 96.3]),
+    ("pas", [99.1, 99.0, 98.5, 97.8]),
+    ("téléphoner", [65.5, 57.0, 53.3, 54.7]),
+    ("à", [91.5, 87.1, 83.4, 81.2]),
+    ("Martine", [88.0, 87.6, 84.9, 80.6]),
+    ("?", [91.6, 95.3, 92.6, 90.5]),
+    ("Elle", [82.7, 87.7, 84.0, 82.1]),
+    ("les", [96.4, 93.8, 92.0, 91.1]),
+    ("a", [85.9, 84.7, 77.0, 73.9]),
+    ("peut-être", [67.7, 65.1, 51.8, 52.8]),
+    ("vus", [32.2, 29.3, 16.8, 17.4]),
+    ("!", [89.0, 93.9, 87.7, 84.3]),
+    ("Aussitôt", [76.4, 65.9, 60.4, 52.1]),
+    ("dit", [96.7, 93.1, 87.9, 81.8]),
+    (",", [89.9, 89.1, 83.7, 82.5]),
+    ("aussitôt", [79.7, 66.0, 57.7, 52.4]),
+    ("fait", [96.8, 90.1, 88.1, 87.5]),
+    ("!", [90.5, 95.2, 90.6, 89.0]),
+    ("À", [91.6, 91.1, 85.6, 83.1]),
+    ("ce", [70.6, 63.0, 57.8, 56.8]),
+    ("moment", [92.4, 91.5, 89.4, 88.4]),
+    (",", [89.3, 88.2, 85.7, 83.9]),
+    ("le", [98.9, 99.0, 98.7, 98.7]),
+    ("chien", [98.3, 97.7, 96.8, 96.2]),
+    ("se", [94.2, 88.4, 85.9, 84.6]),
+    ("mit", [89.1, 80.0, 76.3, 77.0]),
+    ("à", [81.8, 77.5, 66.8, 68.9]),
+    ("aboyer", [74.2, 62.6, 60.4, 58.4]),
+    (".", [93.7, 97.0, 93.5, 99.7]),
+]
+
+assert len(REUSSITE_PAR_ITEM) == 83, "la dictée compte 83 items"
+
+ITEMS, MOTS, RANGS = A.charger_grille()
+RUNS, N_COMMUN = A.restreindre_corpus_commun(A.charger_runs())
+
+
+def fr(x: float, d: int = 1) -> str:
+    """Nombre au format français, « nd » s'il manque."""
+    if x is None or pd.isna(x):
+        return "nd"
+    return f"{x:.{d}f}".replace(".", ",")
+
+
+def hors_vierges(df: pd.DataFrame) -> pd.DataFrame:
+    """Retire les copies vierges repérées par le pipeline (colonne `blank`)."""
+    if A.COLONNE_VIERGE in df.columns:
+        return df[~df[A.COLONNE_VIERGE].fillna(False).astype(bool)]
+    return df
+
+
+#: Référence du codage expert : identique dans tous les runs, on prend le premier.
+DF_REF = hors_vierges(next(iter(RUNS.values())).df) if RUNS else pd.DataFrame()
+N_COPIES = DF_REF["copy_id"].nunique() if RUNS else 0
+N_VIERGES = (
+    next(iter(RUNS.values())).df["copy_id"].nunique() - N_COPIES if RUNS else 0
+)
+
+
+def erreurs_par_copie(df: pd.DataFrame, colonne: str) -> pd.Series:
+    """Nombre d'erreurs par copie, avec la convention erreur = code ≠ 1."""
+    return (df[colonne] != "1").groupby(df["copy_id"]).sum()
+
+
+def ligne_repartition(erreurs: pd.Series) -> list[str]:
+    """Pourcentages de la figure 1, puis moyenne et écart-type."""
+    cellules = []
+    for _, sens, seuil in SEUILS:
+        masque = erreurs <= seuil if sens == "le" else erreurs >= seuil
+        cellules.append(fr(masque.mean() * 100))
+    return cellules + [fr(erreurs.mean()), fr(erreurs.std())]
+```
+
+Cette page reprend des tableaux publiés par la DEPP sur les évaluations passées
+de la dictée. Chaque tableau est complété par les mêmes indicateurs calculés sur
+le corpus du projet : codage expert et prédictions des modèles.
+
+::: {.callout-note appearance="simple"}
+**Périmètre de la comparaison.** Le corpus du projet ne contient que des copies
+de **2015**. Les lignes calculées se comparent donc à la ligne 2015 publiée.
+Les copies vierges sont écartées, comme les élèves absents d'une évaluation.
+Le champ publié est le secteur public de France métropolitaine. Celui du corpus
+peut différer légèrement.
+:::
+
+## Répartition du nombre d'erreurs {#repartition}
+
+Une erreur est un mot mal orthographié ou un signe de ponctuation erroné, sur 83 items. 
+Un mot absent compte comme une erreur. La moyenne et l'écart-type publiés viennent de la 
+figure 4 de la même note.
+
+```{python}
+#| echo: false
+#| output: asis
+entetes = ["Année", "Source"] + [s[0] for s in SEUILS] + ["Moyenne", "Écart-type"]
+lignes = [
+    [str(annee), "DEPP, publié"]
+    + [fr(v) for v in REPARTITION[annee]]
+    + [fr(v) for v in MOYENNE_ECART_TYPE[annee]]
+    for annee in ANNEES
+]
+if RUNS:
+    lignes.append(
+        ["**2015**", "**Codage expert (corpus projet)**"]
+        + [f"**{c}**" for c in ligne_repartition(erreurs_par_copie(DF_REF, "y_true"))]
+    )
+    for label, run in RUNS.items():
+        lignes.append(
+            ["2015", f"{label}"]
+            + ligne_repartition(erreurs_par_copie(hors_vierges(run.df), "y_pred"))
+        )
+print('::: {.table-responsive}')
+print(
+    A.table_markdown(
+        entetes,
+        lignes,
+        "Répartition du nombre d'erreurs à la dictée (en % d'élèves), moyenne et "
+        "écart-type (en nombre d'erreurs)",
+    )
+)
+print(":::")
+print()
+print(f"Source des lignes publiées : {SOURCE_NI_2237}.")
+if RUNS:
+    print(
+        f"\nLignes calculées : {A.milliers(N_COPIES)} copies de 2015, "
+        f"{N_VIERGES} copies vierges écartées."
+    )
+```
+
+**Lecture.** La ligne du codage expert valide le corpus : elle retrouve la ligne
+2015 publiée. Les lignes des modèles montrent l'écart introduit par le codage
+automatique. Un modèle qui sous-estime le nombre d'erreurs décale la répartition
+vers 1987. Un modèle qui le surestime la décale vers 2021 et au-delà.
+
+## Taux de réussite par item {#reussite-par-item}
+
+Figure 3 de la Note d'Information 22.37. Le taux de réussite est la part des
+élèves qui écrivent correctement l'item (code `1`).
+
+### Synthèse par modèle {#reussite-synthese}
+
+L'écart moyen absolu résume, en points, la distance entre les taux du modèle et
+ceux de l'expert sur les 83 items.
+
+```{python}
+#| echo: false
+#| output: asis
+IDS = [it.item_id for it in ITEMS] if ITEMS else []
+
+#: Taille des 9 phrases de la dictée, dans l'ordre de la figure 3.
+TAILLES_PHRASES = [10, 11, 11, 10, 10, 8, 6, 6, 11]
+
+#: Seuils de coloration de l'écart modèle moins expert, en points.
+SEUIL_LEGER, SEUIL_FORT = 5, 10
+
+
+def reussite(df: pd.DataFrame, colonne: str) -> pd.Series:
+    """Taux de réussite par item (en %), dans l'ordre de la grille."""
+    return (df[colonne] == "1").groupby(df["item_id"]).mean().reindex(IDS) * 100
+
+
+if RUNS and IDS:
+    EXPERT = reussite(DF_REF, "y_true")
+    REUSSITE_RUNS = {label: reussite(hors_vierges(run.df), "y_pred") for label, run in RUNS.items()}
+    PUBLIE_2015 = pd.Series([p[2] for _, p in REUSSITE_PAR_ITEM], index=IDS)
+
+    lignes = [
+        [
+            "DEPP 2015, publié",
+            fr((PUBLIE_2015 - EXPERT).abs().mean()),
+            str(int(((PUBLIE_2015 - EXPERT).abs() >= SEUIL_FORT).sum())),
+        ]
+    ]
+    for label, serie in REUSSITE_RUNS.items():
+        ecart = serie - EXPERT
+        lignes.append(
+            [
+                f"{label}",
+                fr(ecart.abs().mean()),
+                str(int((ecart.abs() >= SEUIL_FORT).sum())),
+            ]
+        )
+    print(
+        A.table_markdown(
+            ["Comparé au codage expert 2015", "Écart moyen absolu (points)",
+             f"Items à {SEUIL_FORT} points ou plus"],
+            lignes,
+            "Distance au codage expert des taux de réussite par item",
+        )
+    )
+    print()
+    print(
+        "La ligne DEPP mesure l'écart entre l'échantillon publié et le corpus du "
+        "projet. Elle donne l'ordre de grandeur d'un écart négligeable."
+    )
+```
+
+### Détail par phrase {#reussite-detail}
+
+La dictée est découpée en phrases, comme dans la note. Les lignes [grises]{.mot-gris} sont
+publiées par la DEPP. La ligne en gras est le codage expert du corpus. Les
+dernières lignes donnent les taux du modèle choisi.
+
+```{python}
+#| echo: false
+#| output: asis
+import html
+
+
+def classe_ecart(ecart: float) -> str:
+    """Classe CSS d'une cellule modèle selon son écart à l'expert."""
+    if pd.isna(ecart) or abs(ecart) < SEUIL_LEGER:
+        return ""
+    sens = "plus" if ecart > 0 else "moins"
+    force = "fort" if abs(ecart) >= SEUIL_FORT else "leger"
+    return f"ecart-{sens}-{force}"
+
+
+def table_phrase(debut: int, taille: int, modele: str) -> str:
+    """Tableau HTML d'une phrase : mots en colonnes, sources en lignes."""
+    ids = IDS[debut : debut + taille]
+    mots = [m for m, _ in REUSSITE_PAR_ITEM[debut : debut + taille]]
+    publies = [p for _, p in REUSSITE_PAR_ITEM[debut : debut + taille]]
+
+    out = ['<div class="table-responsive"><table class="table table-sm table-dictee">']
+    out.append(
+        "<thead><tr><th></th>"
+        + "".join(f"<th>{html.escape(m)}</th>" for m in mots)
+        + "</tr></thead><tbody>"
+    )
+    for j, annee in enumerate(ANNEES):
+        out.append(
+            f'<tr class="ligne-publiee"><th>{annee}</th>'
+            + "".join(f"<td>{fr(p[j])}</td>" for p in publies)
+            + "</tr>"
+        )
+    out.append(
+        '<tr class="ligne-expert"><th>Expert 2015</th>'
+        + "".join(f"<td>{fr(EXPERT[i])}</td>" for i in ids)
+        + "</tr>"
+    )
+    for approche in A.approches_du_modele(modele):
+        label = A.libelle_run(approche, modele)
+        if label not in REUSSITE_RUNS:
+            continue
+        serie = REUSSITE_RUNS[label]
+        cellules = []
+        for i in ids:
+            ecart = serie[i] - EXPERT[i]
+            infobulle = f"écart à l'expert : {'+' if ecart > 0 else ''}{fr(ecart)} points"
+            cellules.append(
+                f'<td class="{classe_ecart(ecart)}" title="{infobulle}">{fr(serie[i])}</td>'
+            )
+        out.append(f'<tr class="ligne-modele"><th>{approche}</th>{"".join(cellules)}</tr>')
+    out.append("</tbody></table></div>")
+    return "\n".join(out)
+
+
+LEGENDE = (
+    '<div class="legende-ecarts">Écart du modèle à l\'expert :'
+    f'<span class="ecart-plus-fort">+{SEUIL_FORT} pts ou plus</span>'
+    f'<span class="ecart-plus-leger">+{SEUIL_LEGER} à +{SEUIL_FORT} pts</span>'
+    f'<span class="ecart-moins-leger">&minus;{SEUIL_LEGER} à &minus;{SEUIL_FORT} pts</span>'
+    f'<span class="ecart-moins-fort">&minus;{SEUIL_FORT} pts ou plus</span>'
+    "</div>"
+)
+
+if RUNS and IDS:
+    MODELES_VUE = [m for m in A.MODELES if any(r.modele_cle == m for r in RUNS.values())]
+    ACTIF = A.MODELE_REFERENCE if A.MODELE_REFERENCE in MODELES_VUE else MODELES_VUE[0]
+    print(A.selecteur_modele(MODELES_VUE, ACTIF, "selecteur-modele-depp"))
+    print()
+    print(LEGENDE)
+    print()
+    print(
+        '<span class="mot-couleur ecart-plus-fort">Bleu</span> : le modèle valide '
+        "plus souvent que l'expert (sur-correction). "
+        '<span class="mot-couleur ecart-moins-fort">Orange</span> : il sanctionne '
+        "plus souvent (sur-détection). L'écart exact "
+        "s'affiche au survol."
+    )
+    print()
+    for modele in MODELES_VUE:
+        with A.vue_modele(modele, ACTIF):
+            debut = 0
+            for numero, taille in enumerate(TAILLES_PHRASES, start=1):
+                print(table_phrase(debut, taille, modele))
+                print()
+                debut += taille
+    print()
+    print(f"Source des lignes 1987 à 2021 : {SOURCE_NI_2237}.")
+else:
+    print('::: {.callout-note appearance="simple"}')
+    print("Lignes calculées indisponibles : aucun run ou grille non chargé.")
+    print(":::")
+```
+
+La [prévalence par item](resultats.qmd#prevalence-derreur-par-item) de la page
+Résultats donne les intervalles de confiance.
+
+```{python}
+#| echo: false
+#| output: asis
+print(A.bloc_notes())
+```
