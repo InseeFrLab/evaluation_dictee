@@ -24,6 +24,11 @@ class ItemPrediction:
     confidence: float | None = None
     transcription: str | None = None
     comparaison: str | None = None  # différence lue-attendue, renseignée en mode chain-of-thought
+    # True si le modèle a bien écrit « comparaison » AVANT « code » dans son JSON.
+    # Le décodage contraint de vLLM n'impose PAS l'ordre des clés (mesuré) : une
+    # comparaison écrite après le code est une justification a posteriori, pas un
+    # raisonnement — la distinction doit rester visible dans les résultats.
+    comparaison_avant_code: bool | None = None
 
 
 @dataclass
@@ -36,6 +41,15 @@ class CopyPrediction:
     n_attempts: int = 1
     # Transcription brute de l'étape 1 (two_stage) ; None en end_to_end.
     raw_transcription: str | None = None
+    # Raisonnement natif du modèle (champ `reasoning_content` de l'API), quand le mode
+    # thinking est actif. C'est du niveau COPIE, pas de l'item : le modèle produit un
+    # seul bloc pour les 83 items. Stocké à part (`<run>_reasoning.jsonl`) et jamais
+    # recopié sur chaque ligne d'item — 83 x 13 000 caractères par copie sinon.
+    reasoning: str | None = None
+    # Nombre d'items que le modèle déclare avoir LUS sur la copie (option count_items).
+    # Comparable à ce que déclare l'expert : 83 moins ses codes "0". None si l'option
+    # est inactive ou si le champ n'a pas été renvoyé.
+    n_items_lus: int | None = None
 
 
 class Scorer(ABC):

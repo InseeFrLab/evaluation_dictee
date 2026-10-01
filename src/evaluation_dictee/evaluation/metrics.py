@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from sklearn.metrics import cohen_kappa_score, confusion_matrix
+
+from evaluation_dictee.data import reference
 
 
 @dataclass
@@ -51,3 +54,59 @@ def compute_scoring_metrics(y_true: list[str], y_pred: list[str]) -> ScoringMetr
         labels=labels,
         confusion=matrix,
     )
+
+
+def compute_diagnostic_metrics(
+    y_true: list[str],
+    y_pred: list[str],
+    item_ids: list[str],
+    item_types: dict[str, str],
+) -> dict[str, float]:
+    """Métriques de diagnostic d'un run, au-delà de l'accord et du kappa.
+
+    Ces quatre chiffres sont ceux qui ont permis de comprendre POURQUOI un bras
+    d'expérience fonctionne ou non, là où l'accord et le kappa disent seulement s'il
+    fonctionne. Les enregistrer à chaque run évite d'avoir à rejouer l'analyse.
+
+    - `taux_sous_detection` : part des fautes réelles que le modèle code « correct ».
+      C'est l'erreur dominante, autour de 45 % sur tous les modèles testés.
+    - `biais_taux_faute_pts` : écart, en points, entre le taux de faute attribué aux
+      élèves par le modèle et celui mesuré par l'expert. Négatif = sous-détection.
+    - `kappa_mots` et `kappa_ponctuation` : mot et ponctuation sont deux tâches
+      distinctes (l'un se rate par faute, l'autre par omission) qu'un kappa global
+      confond ; l'écart entre les deux atteint 0,23 sur certains modèles.
+
+    Args:
+        y_true: codes experts, déjà filtrés des items inévaluables.
+        y_pred: codes prédits, alignés sur `y_true`.
+        item_ids: identifiant d'item de chaque décision.
+        item_types: nature de chaque item ("mot" ou "ponctuation"), par identifiant.
+
+    Returns:
+        Les métriques de diagnostic. Une métrique indéfinie (strate vide ou kappa non
+        calculable) est omise plutôt que renvoyée à zéro, qui se lirait comme une
+        mesure.
+    """
+    if not y_true:
+        return {}
+
+    fautes = [i for i, code in enumerate(y_true) if code == reference.SIMPLE_ERREUR]
+    out: dict[str, float] = {}
+    if fautes:
+        manquees = sum(1 for i in fautes if y_pred[i] == reference.SIMPLE_CORRECT)
+        out["taux_sous_detection"] = manquees / len(fautes)
+
+    taux_vrai = len(fautes) / len(y_true)
+    taux_pred = sum(1 for code in y_pred if code == reference.SIMPLE_ERREUR) / len(y_pred)
+    out["biais_taux_faute_pts"] = (taux_pred - taux_vrai) * 100
+
+    for nature, suffixe in [("mot", "mots"), ("ponctuation", "ponctuation")]:
+        idx = [i for i, item in enumerate(item_ids) if item_types.get(item) == nature]
+        if not idx:
+            continue
+        kappa = compute_scoring_metrics(
+            [y_true[i] for i in idx], [y_pred[i] for i in idx]
+        ).cohen_kappa
+        if kappa is not None and not math.isnan(kappa):
+            out[f"kappa_{suffixe}"] = kappa
+    return out

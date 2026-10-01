@@ -30,6 +30,18 @@ logger = get_logger(__name__)
 # two_stage) partage un seul format : c'est le `name` du run qui distingue les runs.
 SCORING_SUFFIX = "_predictions.jsonl"
 HTR_SUFFIX = "_htr_predictions.jsonl"
+# Liste des copies écartées des métriques (vierges/illisibles, décision D8), à
+# vérifier à l'œil. Propre au scoring : le pipeline HTR ne produit pas ce fichier.
+COPIES_ECARTEES_SUFFIX = "_copies_ecartees.csv"
+
+# Sous-dossier des runs D'EXPÉRIMENTATION (bras testés sur un échantillon partiel :
+# chain-of-thought, comptage, exemples de fautes...). Le site (`website/_analyse.py`)
+# liste `predictions/` sans y descendre : un fichier posé ici n'apparaît donc JAMAIS
+# comme un modèle, par construction, sans aucune liste de noms à maintenir. Un run
+# n'alimente le site que lorsqu'il est mené sur le corpus complet (`data.limit: null`)
+# et exporté dans `predictions/` — c'est déjà la règle qu'applique
+# `launchers/launch_eval.sh`, qui désactive son export si `--limit` est utilisé.
+EXPERIMENTATIONS_SUBDIR = "experimentations"
 
 
 def resolve_run_name(config_path: str | Path, htr: bool = False) -> str:
@@ -56,6 +68,20 @@ def resolve_run_name(config_path: str | Path, htr: bool = False) -> str:
 def _join_s3(prefix: str, name: str) -> str:
     """Concatène un préfixe (S3 ou local) et un nom de fichier (un seul slash)."""
     return prefix.rstrip("/") + "/" + name
+
+
+def resolve_dest_prefix(base_prefix: str | Path, experimentation: bool) -> str:
+    """Choisit `predictions/` ou `predictions/experimentations/` selon la nature du run.
+
+    Args:
+        base_prefix: préfixe S3 des runs de référence (ex. `S3_PREDICTIONS_PREFIX`).
+        experimentation: True pour un bras testé sur un échantillon partiel.
+
+    Returns:
+        Le préfixe de destination effectif.
+    """
+    base = str(base_prefix).rstrip("/")
+    return f"{base}/{EXPERIMENTATIONS_SUBDIR}" if experimentation else base
 
 
 def upload_predictions(local_path: str | Path, dest_prefix: str | Path) -> str:
@@ -93,18 +119,42 @@ def export_run(
     source_dir: str | Path = "data/processed",
     htr: bool = False,
 ) -> str:
-    """Exporte vers S3 le fichier de prédictions d'un run donné.
+    """Exporte vers S3 le fichier de prédictions d'un run donné, et sa liste d'écartées.
+
+    La liste des copies écartées (vierges/illisibles, décision D8) est exportée à côté
+    du fichier de prédictions quand elle existe — c'est-à-dire quand le run en a
+    effectivement écarté au moins une. Elle doit être vérifiée à l'œil (une copie peut
+    être déclarée vierge à tort) ; ne pas l'exporter la laisserait bloquée sur la
+    machine qui a produit le run, invérifiable par quiconque d'autre.
 
     Args:
         run_name: Nom du run (préfixe des fichiers de sortie).
         dest_prefix: Préfixe S3 de destination.
         source_dir: Dossier local des prédictions. [défaut : data/processed]
         htr: Si True, exporte `<name>_htr_predictions.jsonl` (transcription seule)
-            au lieu du fichier de scoring.
+            au lieu du fichier de scoring ; la liste des écartées n'est alors pas
+            concernée, le pipeline HTR ne la produit pas.
 
     Returns:
-        L'URI S3 du fichier écrit.
+        L'URI S3 du fichier de prédictions écrit.
     """
     suffix = HTR_SUFFIX if htr else SCORING_SUFFIX
     local_path = Path(source_dir) / f"{run_name}{suffix}"
-    return upload_predictions(local_path, dest_prefix)
+    dest = upload_predictions(local_path, dest_prefix)
+
+    if not htr:
+        ecartees = Path(source_dir) / f"{run_name}{COPIES_ECARTEES_SUFFIX}"
+        if ecartees.is_file():
+            dest_ecartees = _join_s3(str(dest_prefix), ecartees.name)
+            with open(ecartees, "rb") as src, fsspec.open(dest_ecartees, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            logger.info("Copies écartées exportées : %s → %s", ecartees, dest_ecartees)
+        else:
+            logger.info(
+                "Aucune copie écartée pour %s (fichier %s absent) : rien à exporter "
+                "en plus des prédictions.",
+                run_name,
+                ecartees.name,
+            )
+
+    return dest

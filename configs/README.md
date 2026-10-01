@@ -96,7 +96,7 @@ possibles et par défaut : commence par le lire, puis copie-le pour ta config.
 | `model.temperature` | échantillonnage (0 = déterministe) | `0.0` |
 | `model.max_tokens` | plafond de génération (marge anti-troncature) | `2048`, **mettre `8192`** |
 | `model.max_retries` | essais si réponse non parsable | `2` |
-| `model.disable_thinking` | coupe le `<think>` des modèles Qwen3/R1 | `true` |
+| `model.disable_thinking` | `false` = le modèle raisonne avant de répondre | `true` |
 | `model.structured_output` | force un JSON conforme au schéma (anti « non transcrite ») | `true` |
 | `data.corpus` | corpus | `dictee` \| `production_ecrite` |
 | `data.images_path` | imagettes (local ou `s3://…`) | requis |
@@ -117,13 +117,67 @@ variantes se créent en copiant la référence et en changeant peu de champs :
 
 | Variante | Champs à changer |
 |---|---|
-| Autre modèle | `model.name` (+ `disable_thinking: true` si modèle *thinking* : Qwen3, R1…) |
-| Chain-of-thought | `prompt.chain_of_thought: true` |
+| Autre modèle | `model.name` |
+| Raisonnement natif (thinking) | `disable_thinking: false` + `max_tokens: 16384`, **modèles Qwen3 seulement** |
+| Chain-of-thought (champ « comparaison ») | `prompt.chain_of_thought: true` |
 | Deux étapes (HTR + codage) | `approach: two_stage` + ajouter le bloc `model_stage2` |
 | Run de fumée (traçage) | `data.limit: 5` et un `name` dédié |
 
 > **Comparaison équitable end-to-end vs two-stage** : garder le *même* modèle des
 > deux côtés isole l'effet de l'architecture (1 vs 2 étapes) de celui du modèle.
+
+### Options de raisonnement : ce qui marche, ce qui ne marche pas
+
+Six variantes de prompt ont été mesurées sur la dictée 2015, à modèle et corpus
+constants, contre le run de référence du **même** modèle, sur 500 copies (494
+communes aux 18 séries après exclusion des copies vierges/illisibles, décision D8).
+Elles sont toutes à `false` par défaut. Le tableau donne l'écart de kappa mesuré ; ★
+signale un intervalle de confiance à 95 % (bootstrap par grappes) excluant zéro.
+
+| Option | `qwen3-6-35b-moe` | `qwen3-8-27b` | `gemma4-26b-moe` |
+|---|---|---|---|
+| `chain_of_thought` | −0,034 ★ | +0,017 | −0,038 ★ |
+| `count_items` | −0,016 | +0,033 ★ | −0,051 ★ |
+| `count_items` + `enforce_count` + `check_neighbours` (**comptage+**) | +0,006 | +0,036 ★ | −0,075 ★ |
+| `show_error_examples` (**exemples**) | +0,027 ★ | +0,081 ★ | +0,027 ★ |
+| **comptage+ ET exemples combinés** | **+0,032 ★** | **+0,119 ★** | **−0,020 ★** |
+| `disable_thinking: false` (raisonnement natif, 20 copies) | inexploitable | non testé | inexploitable |
+
+**Pourquoi la CoT, le comptage seul et le raisonnement natif échouent.** L'analyse des
+copies les plus mal codées a montré que **90 % des fautes manquées sont des items que
+le modèle transcrit à l'identique du mot attendu** : il ne voit pas la différence. Le
+goulot est perceptif, pas logique — or ces options agissent sur le raisonnement.
+Recoder mécaniquement à partir de la transcription du modèle donne d'ailleurs un kappa
+PIRE que son propre codage (0,554 contre 0,603) : son jugement est bon, c'est sa
+lecture qui bloque. Le raisonnement natif est en outre inexploitable en end-to-end
+(45 % de copies perdues par troncature, ~61 h projetées contre ~5 h). Le vote
+majoritaire entre les trois modèles ne dépasse pas non plus le meilleur modèle isolé.
+
+**`show_error_examples` vise directement la lecture** (les fautes déjà observées sur
+chaque item), et c'est la seule option qui améliore les trois modèles pris
+individuellement.
+
+**La combiner à comptage+ donne le meilleur résultat de tout le projet, sur
+`qwen3-8-27b`** : +0,119 de kappa (0,495 → 0,614), proche de la somme des deux effets
+pris séparément (+0,081 et +0,036) — signe que les deux mécanismes corrigent des
+erreurs largement indépendantes chez ce modèle. Sur `qwen3-6-35b-moe`, la combinaison
+n'ajoute qu'un peu à `exemples` seul (+0,032 contre +0,027). **Sur `gemma4-26b-moe`,
+la combinaison est nettement DÉFAVORABLE** (−0,020) alors qu'`exemples` seul est le
+meilleur bras pour ce modèle (+0,027) : le mécanisme de comptage, nocif pour `gemma4`
+dans tous ses bras, annule et inverse le gain d'`exemples` une fois combiné.
+
+**Aucun bras n'est donc universellement bon** : `comptage+exemples` pour
+`qwen3-8-27b`, `exemples` seul pour `gemma4-26b-moe`, et un choix moins tranché pour
+`qwen3-6-35b-moe` où les deux se valent à peu près.
+
+> **Ne pas activer deux options de raisonnement dans un même run** : l'écart mesuré ne
+> serait plus imputable à l'une ou à l'autre.
+
+**Exporter un bras testé sur un échantillon** (`--limit`) va automatiquement dans
+`predictions/experimentations/` sur S3, jamais dans `predictions/` : c'est ce qui
+empêche un bras d'apparaître comme un faux modèle sur le site (décision D9). Rien à
+faire de spécial, `scripts/export_predictions.py --config ...` s'en charge seul en
+comparant l'effectif du run au corpus complet.
 
 ---
 
@@ -192,5 +246,21 @@ défauts).
   quittent jamais le SSP Cloud ; aucune image dans Git (`data/` est ignoré).
 - **`max_tokens`** : une copie fait 83 items. En JSON (et *a fortiori* en CoT),
   prévoir `8192` pour éviter une troncature qui casse le parsing.
-- **Modèles « thinking »** (Qwen3, DeepSeek-R1, QwQ) : toujours
-  `disable_thinking: true`, sinon le bloc `<think>` casse le JSON.
+- **Deux mécanismes de raisonnement, à ne pas confondre** :
+  - `model.disable_thinking: false` active le **raisonnement natif** du modèle. La
+    sortie JSON n'est PAS modifiée (le raisonnement arrive dans un champ
+    `reasoning_content` séparé, écrit dans `<run>_<modele>_reasoning.jsonl`, une
+    ligne par copie). C'est du niveau **copie**, pas item : un bloc pour les 83
+    items. Réservé aux modèles Qwen3 — mesuré le 11/09/2026, `gemma4-26b-moe` en
+    thinking consomme 16 384 tokens de raisonnement sans jamais rendre de JSON, et
+    `qwen3-vl` n'a pas ce mode. Il n'existe **aucun réglage d'effort** :
+    `reasoning_effort` et `thinking_budget` sont acceptés par l'API mais inertes.
+  - `prompt.chain_of_thought: true` ajoute un champ **« comparaison » par item**
+    dans le JSON : le schéma de sortie change, et le raisonnement devient
+    attribuable item par item. Coût mesuré : +28 à +46 % de tokens.
+- **Ne pas activer les deux ensemble** dans un même run : un écart de performance ne
+  serait plus attribuable à l'un ou à l'autre.
+- **`max_tokens` et raisonnement** : le raisonnement est facturé sur le même budget
+  que la réponse. 8192 suffit sans raisonnement, il faut **16384** avec. Une
+  génération tronquée code toute la copie en `?` — le pipeline émet désormais un
+  avertissement « Génération TRONQUÉE » au lieu d'échouer en silence.

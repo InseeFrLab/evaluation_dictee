@@ -1,0 +1,75 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — MÉTHODE C (end-to-end) AVEC RAISONNEMENT NATIF
+# ═══════════════════════════════════════════════════════════════════════════
+#  Bras « raisonnement » à comparer à dictee_end2end.yaml : SEUL `disable_thinking`
+#  (et le budget de tokens qu'il impose) change. Le prompt, la grille, le schéma de
+#  sortie et les données sont identiques — c'est ce qui rend la comparaison lisible.
+#
+#  Le modèle raisonne avant de répondre ; l'endpoint isole ce raisonnement dans
+#  `reasoning_content`, donc le JSON reste conforme au schéma. Le raisonnement est
+#  de niveau COPIE (un bloc pour les 83 items), pas de niveau item : il est écrit
+#  dans data/processed/<run>_<modele>_reasoning.jsonl, une ligne par copie.
+#
+#  ⚠ Modèles : réservé aux modèles thinking. Mesuré sur llm.lab (11/09/2026) :
+#    - qwen3-6-35b-moe  : OK, ~9 700 tokens de sortie sur 83 items (vs ~4 400 sans).
+#    - qwen3-8-27b      : OK, comportement voisin.
+#    - gemma4-26b-moe   : INUTILISABLE — le raisonnement s'emballe, consomme les
+#                         16 384 tokens et ne rend aucun JSON. Ne pas l'utiliser ici.
+#    - qwen3-vl         : pas de raisonnement natif du tout.
+#  ⚠ Il n'existe PAS de réglage d'effort : `reasoning_effort` et `thinking_budget`
+#    sont acceptés par l'API mais sans aucun effet (mesuré). C'est tout ou rien.
+#
+#  Lancer (smoke-test) :
+#    uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end_thinking.yaml --limit 20
+#  Second modèle, sans dupliquer ce fichier :
+#    uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end_thinking.yaml \
+#      --model-name qwen3-8-27b
+#  Sortie : data/processed/dictee_end2end_thinking_<modele>_predictions.jsonl
+#           data/processed/dictee_end2end_thinking_<modele>_reasoning.jsonl
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: dictee_end2end_thinking
+seed: 42
+concurrency: 12
+
+approach: end_to_end
+
+model:
+  name: qwen3-6-35b-moe
+  kind: vlm
+  temperature: 0.0
+  # 32768, et non 8192 : le raisonnement est facturé sur le MÊME budget que le JSON,
+  # et une réponse tronquée code TOUTE la copie en « ? » (cause de l'échec à 100 % du
+  # run CoT de juillet 2026). Dimensionnement mesuré le 11/09/2026 en end-to-end :
+  # 20 000 à 33 000 caractères de raisonnement par copie (~5 000 à 8 000 tokens, le
+  # modèle décrivant l'image ligne par ligne avant de coder) + ~4 500 tokens de JSON.
+  # 16384 laissait 12 copies sur 20 tronquées ; le plafond du codage texte seul
+  # (~9 700 tokens) sous-estimait largement le besoin de l'end-to-end.
+  max_tokens: 32768
+  request_logprobs: true
+  max_retries: 2
+  # ← LE paramètre de ce bras. false = le modèle raisonne avant de répondre.
+  disable_thinking: false
+  structured_output: true
+
+# Pas de bloc model_stage2 en end_to_end (une seule passe).
+
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: C
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  # Laissé à false VOLONTAIREMENT : le champ « comparaison » est l'autre mécanisme
+  # de raisonnement, qui lui modifie le schéma de sortie. Les activer ensemble
+  # rendrait impossible d'attribuer un écart à l'un ou à l'autre.
+  chain_of_thought: false

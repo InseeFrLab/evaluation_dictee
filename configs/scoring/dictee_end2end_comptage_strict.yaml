@@ -1,0 +1,61 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — MÉTHODE C (end-to-end), COMPTAGE + DEUX GARDE-FOUS
+# ═══════════════════════════════════════════════════════════════════════════
+#  Reprend le bras `dictee_end2end_comptage` et y ajoute DEUX consignes, chacune
+#  derrière son propre drapeau pour pouvoir isoler laquelle agit :
+#
+#  1. `enforce_count` — le nombre d'items codés « 0 » doit coïncider avec le
+#     comptage déclaré. Mesuré sur le bras comptage : le modèle annonce un
+#     décompte puis en code un autre sur 9 copies sur 50 (qwen3-6-35b-moe) et
+#     10 sur 35 (qwen3-8-27b). Sans cette consigne, le comptage reste décoratif.
+#
+#  2. `check_neighbours` — vérification de voisinage N-1 / N / N+1 sur CHAQUE
+#     item. Volontairement INCONDITIONNELLE : la conditionner à un manque déclaré
+#     serait inopérant sur qwen3-6-35b-moe, qui annonce 83 items sur 49 copies
+#     sur 50 alors que 27 d'entre elles ont des mots manquants.
+#
+#  Un mot absent non codé « 0 » décale tous les items suivants : une erreur de
+#  lecture en produit vingt. C'est ce que ces deux consignes visent.
+#
+#  Lancer : uv run scripts/run_benchmark.py \
+#             --config configs/scoring/dictee_end2end_comptage_strict.yaml \
+#             --limit 50 --model-name <modele>
+#  Sortie : data/processed/dictee_end2end_comptage_strict_<modele>_predictions.jsonl
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: dictee_end2end_comptage_strict
+seed: 42
+concurrency: 12
+
+approach: end_to_end
+
+model:
+  name: qwen3-6-35b-moe
+  kind: vlm
+  temperature: 0.0
+  max_tokens: 16384
+  request_logprobs: true
+  max_retries: 2
+  disable_thinking: true
+  structured_output: true
+
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: C
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  chain_of_thought: false
+  count_items: true
+  # ← les deux consignes de ce bras
+  enforce_count: true
+  check_neighbours: true

@@ -15,6 +15,12 @@ SIMPLE_CORRECT = "1"
 SIMPLE_ERREUR = "9"  # toute erreur, quel qu'en soit le type
 SIMPLE_ABSENT = "0"
 
+#: Code expert « illisible » : l'annotateur n'a pas pu lire l'item (écriture, ou
+#: numérisation dégradée). Ce n'est PAS un jugement sur la production de l'élève :
+#: il n'existe aucun code modèle qui puisse « avoir raison » en face. Les items
+#: concernés sont donc écartés des métriques et listés pour vérification humaine.
+CODE_ILLISIBLE = "i"
+
 # Ensemble des codes considérés comme « une erreur » (hors absent/correct)
 _CODES_ERREUR = {CODE_ERR_LEXICALE, CODE_ERR_GRAMMATICALE, CODE_ERR_LES_DEUX, CODE_ERR_PONCT}
 
@@ -48,6 +54,23 @@ def allowed_codes(scheme: str) -> set[str]:
     if scheme not in ALLOWED_CODES:
         raise ValueError(f"Schéma inconnu : {scheme!r}. Attendu : {set(ALLOWED_CODES)}.")
     return ALLOWED_CODES[scheme]
+
+
+def est_evaluable(code: str) -> bool:
+    """Le code expert permet-il de juger le modèle sur cet item ?
+
+    Faux pour « illisible » (`i`) et pour un code vide : dans les deux cas, l'expert
+    n'a pas rendu de jugement comparable. Compter ces items comme des désaccords
+    reviendrait à imputer au modèle un défaut d'annotation ou de numérisation — sur
+    l'échantillon de 500 copies, 96 décisions sur 7 copies étaient dans ce cas.
+
+    Args:
+        code: Code expert brut.
+
+    Returns:
+        True si l'item peut entrer dans les métriques de performance.
+    """
+    return code.strip().lower() not in {CODE_ILLISIBLE, ""}
 
 
 def to_simplified(code: str) -> str:

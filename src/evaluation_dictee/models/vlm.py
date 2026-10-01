@@ -22,6 +22,9 @@ from evaluation_dictee.pipeline.prompts import (
     build_dictation_prompt,
     fetch_prompt,
 )
+from evaluation_dictee.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def _image_to_data_url(image: Image.Image) -> str:
@@ -39,13 +42,92 @@ def _image_to_data_url(image: Image.Image) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-def _items_json_schema(chain_of_thought: bool) -> dict[str, Any]:
+def thinking_kwargs(model_config: ModelConfig) -> dict[str, Any]:
+    """`chat_template_kwargs` qui active ou coupe EXPLICITEMENT le raisonnement natif.
+
+    La valeur est toujours transmise, dans les deux sens. Auparavant seule la coupure
+    était envoyée : `disable_thinking: false` laissait le défaut du modèle décider, et
+    ce défaut diffère d'un modèle à l'autre (thinking ON par défaut sur qwen3-6-35b-moe
+    et qwen3-8-27b, OFF sur gemma4-26b-moe). Deux configs identiques ne décrivaient donc
+    pas le même run selon le modèle choisi.
+
+    Args:
+        model_config: Configuration du modèle de l'étape concernée.
+
+    Returns:
+        Le dictionnaire à passer en `extra_body`.
+    """
+    return {"chat_template_kwargs": {"enable_thinking": not model_config.disable_thinking}}
+
+
+def extract_reasoning(message: Any) -> str | None:
+    """Récupère le raisonnement natif (`reasoning_content`) d'une réponse, s'il y en a.
+
+    L'endpoint llm.lab isole le bloc de raisonnement dans un champ distinct de
+    `content` : le JSON reste donc conforme au schéma même en mode thinking, et le
+    raisonnement est récupérable au lieu d'être perdu.
+
+    Args:
+        message: Message de la réponse (`response.choices[0].message`).
+
+    Returns:
+        Le raisonnement, ou None si le modèle n'en a pas produit.
+    """
+    brut = getattr(message, "reasoning_content", None)
+    if brut is None:
+        extra = getattr(message, "model_extra", None) or {}
+        brut = extra.get("reasoning_content")
+    texte = str(brut).strip() if brut else ""
+    return texte or None
+
+
+def log_if_truncated(response: Any, copy_id: str, max_tokens: int) -> bool:
+    """Journalise une génération coupée par `max_tokens` (JSON tronqué = copie perdue).
+
+    Sans cette alerte, une troncature systématique est indiscernable d'un modèle
+    incapable de lire la copie : le run de juillet 2026 a passé 43 h à coder 802 copies
+    en « non transcrite » pour cette raison. En mode thinking, le raisonnement compte
+    dans le même budget que le JSON, ce qui rend le plafond bien plus facile à atteindre.
+
+    Args:
+        response: Réponse complète de l'API.
+        copy_id: Copie concernée, pour le message.
+        max_tokens: Plafond configuré.
+
+    Returns:
+        True si la génération a été tronquée.
+    """
+    # getattr défensif : un endpoint qui n'expose pas `finish_reason` ne doit pas faire
+    # tomber un run de 30 h sur une simple ligne de diagnostic.
+    if getattr(response.choices[0], "finish_reason", None) != "length":
+        return False
+    usage = getattr(response, "usage", None)
+    logger.warning(
+        "Génération TRONQUÉE sur %s : plafond max_tokens=%d atteint (%s tokens générés). "
+        "Le JSON est incomplet, la copie sera perdue. Augmenter `model.max_tokens` "
+        "(en mode thinking, le raisonnement consomme le même budget que la réponse).",
+        copy_id,
+        max_tokens,
+        getattr(usage, "completion_tokens", "?"),
+    )
+    return True
+
+
+def _items_json_schema(chain_of_thought: bool, count_items: bool = False) -> dict[str, Any]:
     """Schéma JSON de la réponse attendue (méthode C) pour le décodage contraint vLLM.
 
     Contraint la structure de chaque item, pas leur nombre (variable selon la copie).
 
+    En mode chain-of-thought, `comparaison` est déclarée AVANT `code` : c'est l'ordre
+    qu'on demande au modèle de suivre, puisque verbaliser la différence après avoir
+    choisi le code ne raisonne rien. Attention, le décodage contraint ne GARANTIT pas
+    cet ordre (mesuré le 11/09/2026 : l'ordre effectif varie d'un modèle et d'une
+    requête à l'autre, tout en restant stable au sein d'une réponse) — d'où le contrôle
+    a posteriori dans `_parse_response`.
+
     Args:
         chain_of_thought: Si True, ajoute le champ obligatoire `comparaison` à chaque item.
+        count_items: Si True, exige un champ `n_items_lus` en tête de réponse.
 
     Returns:
         Schéma JSON de la réponse attendue (objet avec une liste `items`).
@@ -53,23 +135,63 @@ def _items_json_schema(chain_of_thought: bool) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "item_id": {"type": "string"},
         "transcription": {"type": "string"},
-        "code": {"type": "string"},
-        "confidence": {"type": "number"},
     }
-    required = ["item_id", "transcription", "code", "confidence"]
     if chain_of_thought:
         properties["comparaison"] = {"type": "string"}
-        required.append("comparaison")
+    properties["code"] = {"type": "string"}
+    required = list(properties)
+    liste_items = {
+        "items": {
+            "type": "array",
+            "items": {"type": "object", "properties": properties, "required": required},
+        }
+    }
+    if not count_items:
+        return {"type": "object", "properties": liste_items, "required": ["items"]}
+    # `n_items_lus` est déclaré AVANT `items` : le comptage doit précéder le codage
+    # pour le contraindre. Même réserve que pour `comparaison` — l'ordre effectif
+    # n'est pas garanti par le décodage contraint, il est donc vérifié a posteriori.
     return {
         "type": "object",
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {"type": "object", "properties": properties, "required": required},
-            }
-        },
-        "required": ["items"],
+        "properties": {"n_items_lus": {"type": "integer"}, **liste_items},
+        "required": ["n_items_lus", "items"],
     }
+
+
+def comparaison_avant_code(entry: dict[str, Any]) -> bool | None:
+    """Le modèle a-t-il écrit « comparaison » avant « code » dans CET item ?
+
+    `json.loads` conserve l'ordre du document : on peut donc vérifier a posteriori si
+    la verbalisation a précédé la décision. Le décodage contraint n'impose pas cet
+    ordre, et une comparaison écrite après le code n'est plus un raisonnement mais une
+    justification — sans ce contrôle, un run « chain-of-thought » peut être purement
+    décoratif sans que rien ne le signale.
+
+    Args:
+        entry: item tel que renvoyé par le modèle, ordre des clés préservé.
+
+    Returns:
+        True/False, ou None si l'item ne porte pas les deux clés (mode CoT inactif).
+    """
+    cles = list(entry)
+    if "comparaison" not in cles or "code" not in cles:
+        return None
+    return cles.index("comparaison") < cles.index("code")
+
+
+def _ordre_dominant(ordres: list[bool | None]) -> bool | None:
+    """Ordre majoritaire des clés sur une réponse (None si aucun item ne l'indique).
+
+    Args:
+        ordres: par item, True si « comparaison » précède « code ».
+
+    Returns:
+        True/False selon l'ordre dominant, None si l'information manque.
+    """
+    renseignes = [o for o in ordres if o is not None]
+    if not renseignes:
+        return None
+    return sum(renseignes) * 2 >= len(renseignes)
 
 
 class VLMScorer(Scorer):
@@ -136,7 +258,10 @@ class VLMScorer(Scorer):
                 "type": "json_schema",
                 "json_schema": {
                     "name": "codage_dictee",
-                    "schema": _items_json_schema(self.prompt_config.chain_of_thought),
+                    "schema": _items_json_schema(
+                        self.prompt_config.chain_of_thought,
+                        self.prompt_config.count_items,
+                    ),
                 },
             }
 
@@ -144,27 +269,81 @@ class VLMScorer(Scorer):
         prediction: CopyPrediction | None = None
         for attempt in range(self.model_config.max_retries + 1):
             temp = self.model_config.temperature + (0.3 if attempt > 0 else 0.0)
-            # disable_thinking : coupe le bloc <think>, néfaste au parsing JSON et à la latence.
-            extra_body = (
-                {"chat_template_kwargs": {"enable_thinking": False}}
-                if self.model_config.disable_thinking
-                else {}
-            )
             response = self.client.chat.completions.create(
                 model=self.model_config.name,
                 temperature=temp,
                 max_tokens=self.model_config.max_tokens,
                 messages=messages,
-                extra_body=extra_body or None,
+                extra_body=thinking_kwargs(self.model_config),
                 **response_format_kwargs,
                 **trace_kwargs,
             )
-            content = response.choices[0].message.content or "{}"
+            message = response.choices[0].message
+            log_if_truncated(response, copy.copy_id, self.model_config.max_tokens)
+            content = message.content or "{}"
             prediction = self._parse_response(copy, content)
             prediction.n_attempts = attempt + 1
+            # Raisonnement de l'essai courant : c'est celui qui a produit les codes rendus.
+            prediction.reasoning = extract_reasoning(message)
             if prediction.transcribed:
                 return prediction
         return prediction  # type: ignore[return-value]
+
+    def _alerter_si_cot_decorative(self, copy: Copy, ordres: list[bool | None]) -> None:
+        """Signale une chain-of-thought produite APRÈS le code, donc sans effet.
+
+        Args:
+            copy: Copie évaluée.
+            ordres: par item, True si « comparaison » précède « code ».
+        """
+        renseignes = [o for o in ordres if o is not None]
+        if not renseignes or sum(renseignes) * 2 >= len(renseignes):
+            return
+        logger.warning(
+            "Chain-of-thought DÉCORATIVE sur %s : le modèle a écrit « comparaison » "
+            "APRÈS « code » sur %d item(s) sur %d. Il justifie sa décision au lieu de "
+            "raisonner avant de la prendre : aucun gain n'est attendu de l'option. Le "
+            "décodage contraint n'impose pas l'ordre des clés — envisager "
+            "`structured_output: false` pour ce run.",
+            copy.copy_id,
+            len(renseignes) - sum(renseignes),
+            len(renseignes),
+        )
+
+    def _alerter_si_comptage_incoherent(
+        self, copy: Copy, items: list[ItemPrediction], n_items_lus: int | None
+    ) -> None:
+        """Signale un comptage annoncé puis contredit par le codage effectif (E2).
+
+        Garde-fou EN TEMPS RÉEL, sur le même principe que
+        `_alerter_si_cot_decorative` : la consigne `enforce_count` demande au modèle
+        de faire coïncider son nombre de codes « 0 » avec `n_items_attendus -
+        n_items_lus`, mais rien ne vérifiait jusqu'ici si c'est réellement le cas
+        pendant le run — seulement après coup, en rejouant le JSONL. Actif dès que
+        `count_items` est vrai, quel que soit le bras (pas de flag dédié).
+
+        Args:
+            copy: Copie évaluée.
+            items: Prédictions finales de la copie (après ré-alignement éventuel).
+            n_items_lus: Comptage déclaré par le modèle, ou None s'il ne l'a pas fourni.
+        """
+        if not self.prompt_config.count_items or n_items_lus is None:
+            return
+        attendu = len(copy.item_ids) - n_items_lus
+        reel = sum(1 for it in items if it.code == "0")
+        if attendu == reel:
+            return
+        logger.warning(
+            "Comptage INCOHÉRENT sur %s : le modèle annonce n_items_lus=%d (donc %d "
+            "item(s) absent(s) attendus sur %d), mais en code réellement %d. Le "
+            "comptage déclaré ne contraint pas son codage — voir décision D11/E2, "
+            "docs/decisions.md.",
+            copy.copy_id,
+            n_items_lus,
+            attendu,
+            len(copy.item_ids),
+            reel,
+        )
 
     def _parse_response(self, copy: Copy, content: str) -> CopyPrediction:
         """Parse la réponse JSON en prédictions par item, avec ré-alignement si décalage détecté.
@@ -182,13 +361,19 @@ class VLMScorer(Scorer):
             cleaned = cleaned.removesuffix("```").strip()
             data = json.loads(cleaned)
             raw_items = data.get("items", [])
-        except (json.JSONDecodeError, KeyError, TypeError):
+            n_lus = data.get("n_items_lus")
+            n_items_lus = int(n_lus) if isinstance(n_lus, int | float) else None
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             raw_items = []
+            n_items_lus = None
 
         # Séquences dans l'ordre renvoyé par le modèle (avant ré-alignement éventuel).
         codes_seq = [str(it.get("code", CODE_NON_PARSE)).strip() for it in raw_items]
         trans_seq = [it.get("transcription") for it in raw_items]
         conf_seq = [it.get("confidence") for it in raw_items]
+        comp_seq = [it.get("comparaison") for it in raw_items]
+        ordres = [comparaison_avant_code(it) for it in raw_items]
+        self._alerter_si_cot_decorative(copy, ordres)
 
         # Aucune réponse exploitable : copie non transcrite (à réessayer puis exclure).
         n_trans_utiles = sum(1 for t in trans_seq if t and str(t).strip())
@@ -205,17 +390,25 @@ class VLMScorer(Scorer):
 
         # Filet de sécurité : ré-aligner si un décalage est détecté.
         if codes_seq and needs_realignment(expected_words, trans_seq):
-            aligned = best_realignment(expected_words, codes_seq, trans_seq, conf_seq)
+            aligned = best_realignment(
+                expected_words, codes_seq, trans_seq, conf_seq, comparaisons=comp_seq
+            )
+            # L'ordre des clés est une propriété de la RÉPONSE, pas d'un item en
+            # particulier : après ré-alignement il vaut donc pour toute la copie.
+            ordre_copie = _ordre_dominant(ordres)
             items = [
                 ItemPrediction(
                     item_id=item_id,
                     code=a.code,
                     confidence=a.confidence,
                     transcription=a.transcription,
+                    comparaison=a.comparaison,
+                    comparaison_avant_code=ordre_copie,
                 )
                 for item_id, a in zip(copy.item_ids, aligned, strict=False)
             ]
-            return CopyPrediction(copy_id=copy.copy_id, items=items)
+            self._alerter_si_comptage_incoherent(copy, items, n_items_lus)
+            return CopyPrediction(copy_id=copy.copy_id, items=items, n_items_lus=n_items_lus)
 
         by_id = {it.get("item_id"): it for it in raw_items}
         items = []
@@ -231,6 +424,8 @@ class VLMScorer(Scorer):
                         confidence=entry.get("confidence"),
                         transcription=entry.get("transcription"),
                         comparaison=entry.get("comparaison"),
+                        comparaison_avant_code=comparaison_avant_code(entry),
                     )
                 )
-        return CopyPrediction(copy_id=copy.copy_id, items=items)
+        self._alerter_si_comptage_incoherent(copy, items, n_items_lus)
+        return CopyPrediction(copy_id=copy.copy_id, items=items, n_items_lus=n_items_lus)

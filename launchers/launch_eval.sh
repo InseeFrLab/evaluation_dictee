@@ -500,14 +500,14 @@ chain() {
   if (( DO_EXPORT == 0 )); then
     echo "#EXPORT skipped=--no-export"
     echo "Export S3 non demandé. Pour l'exporter plus tard :"
-    echo "  uv run scripts/export_predictions.py --run-name ${RUN_NAME}"
+    echo "  uv run scripts/export_predictions.py --run-name ${RUN_NAME} --no-experimentation"
     return 0
   fi
   if (( last_rc != 0 )); then
     echo "#EXPORT skipped=run_incomplet rc=${last_rc}"
     echo "Le run s'est terminé en erreur : pas d'export automatique (un JSONL"
     echo "incomplet écraserait un export S3 plus complet). Après diagnostic :"
-    echo "  uv run scripts/export_predictions.py --run-name ${RUN_NAME}"
+    echo "  uv run scripts/export_predictions.py --run-name ${RUN_NAME} --no-experimentation"
     return 0
   fi
 
@@ -551,11 +551,17 @@ PY
   elif (( grc != 0 )); then
     echo "#EXPORT skipped=verification_impossible rc=${grc}"
     echo "Accès S3 non vérifiable : export manuel après diagnostic —"
-    echo "  uv run scripts/export_predictions.py --run-name ${RUN_NAME}"
+    echo "  uv run scripts/export_predictions.py --run-name ${RUN_NAME} --no-experimentation"
     return 0
   fi
 
-  local -a export_cmd=( uv run scripts/export_predictions.py --run-name "$RUN_NAME" )
+  # --no-experimentation : sans --config ici (juste --run-name), export_predictions.py
+  # ne peut pas déduire seul la destination et l'exigerait sinon explicitement. Ce
+  # lanceur ne traite QUE l'échantillon complet (un `limit` dans le YAML fait échouer
+  # probe_config plus haut) ; le seul cas contraire est --limit + --export forcé par
+  # un humain qui sait ce qu'il fait — pour lui aussi, la destination reste
+  # `predictions/`, comportement inchangé depuis avant l'introduction du sous-dossier.
+  local -a export_cmd=( uv run scripts/export_predictions.py --run-name "$RUN_NAME" --no-experimentation )
   if [[ -n $DEST_PREFIX ]]; then export_cmd+=( --dest-prefix "$DEST_PREFIX" ); fi
   echo "commande : ${export_cmd[*]}"
   if "${export_cmd[@]}"; then

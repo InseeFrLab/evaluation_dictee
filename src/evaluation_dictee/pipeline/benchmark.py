@@ -9,6 +9,9 @@ import contextvars
 import fcntl
 import json
 import os
+import statistics
+import time
+from collections import Counter, defaultdict
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -47,7 +50,18 @@ class BenchmarkResult:
     copy_ids: list[str] = field(default_factory=list)
     predictions_path: Path | None = None
     non_transcribed: list[str] = field(default_factory=list)
-    blank_copies: list[str] = field(default_factory=list)
+    # Copies ÉCARTÉES des métriques, par motif. Elles restent dans le JSONL (rien
+    # n'est perdu) mais ne comptent ni en accord ni en kappa : dans les deux cas
+    # l'expert n'a pas rendu de jugement auquel comparer le modèle.
+    blank_copies: list[str] = field(default_factory=list)  # vierges (aucune encre)
+    illegible_copies: list[str] = field(default_factory=list)  # illisibles (codées « i »)
+    # Items isolément inévaluables sur des copies par ailleurs valides.
+    n_items_ecartes: int = 0
+    # Temps de traitement, une valeur par copie AYANT DONNÉ LIEU À UN APPEL MODÈLE
+    # (les copies vierges sont auto-codées sans appel : les inclure diviserait la
+    # médiane par un facteur arbitraire). Ne couvre que les copies traitées par CE
+    # lancement, pas celles reprises d'un lancement précédent.
+    durations: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -60,6 +74,12 @@ class _CopyOutcome:
     error: str = ""  # message d'erreur (status "failed")
     n_attempts: int = 1  # nombre d'essais (status "non_transcribed")
     blank: bool = False  # copie vierge auto-codée "0" (status "ok")
+    # Ligne JSONL du raisonnement natif (mode thinking), vide s'il n'y en a pas. Écrite
+    # dans un fichier SÉPARÉ : ce champ est de niveau copie, le JSONL de prédictions est
+    # de niveau item (83 lignes par copie) et le recopier y multiplierait par 83 un bloc
+    # de ~13 000 caractères.
+    reasoning_line: str = ""
+    duration_s: float = 0.0  # temps de traitement de la copie, bout en bout
 
 
 @contextmanager
@@ -100,6 +120,37 @@ def _single_writer(out_path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def resume_durees(durees: list[float], workers: int, n_copies_total: int) -> str:
+    """Résume le temps de traitement par copie et projette la durée d'un run complet.
+
+    Le débit d'un run n'est pas la simple somme des durées : les copies sont traitées
+    `workers` en parallèle. La projection divise donc le temps cumulé par le nombre de
+    travailleurs — c'est ce chiffre qui permet de décider si une option (le raisonnement
+    natif, par exemple) reste tenable sur les 3 469 copies de l'échantillon.
+
+    Args:
+        durees: temps par copie, en secondes (copies vierges exclues).
+        workers: nombre de copies traitées en parallèle.
+        n_copies_total: effectif du corpus visé, pour la projection.
+
+    Returns:
+        Une ligne de synthèse prête à journaliser, vide si aucune durée n'a été mesurée.
+    """
+    if not durees:
+        return ""
+    ordonnees = sorted(durees)
+    mediane = statistics.median(ordonnees)
+    p90 = ordonnees[min(len(ordonnees) - 1, int(0.9 * len(ordonnees)))]
+    heures = (statistics.fmean(ordonnees) * n_copies_total) / max(workers, 1) / 3600
+    return (
+        f"Temps par copie : médiane {mediane:.1f} s | moyenne "
+        f"{statistics.fmean(ordonnees):.1f} s | p90 {p90:.1f} s | "
+        f"min {ordonnees[0]:.1f} s | max {ordonnees[-1]:.1f} s "
+        f"(sur {len(ordonnees)} copies, {workers} en parallèle). "
+        f"Projection sur {n_copies_total} copies : {heures:.1f} h."
+    )
 
 
 def run_benchmark(
@@ -163,6 +214,14 @@ def run_benchmark(
     run_name = run_output_name(config)
     out_path = output_dir / f"{run_name}_predictions.jsonl"
     failed_path = output_dir / f"{run_name}_failed_copies.txt"
+    # Raisonnement natif des modèles thinking : une ligne par COPIE, dans un fichier à
+    # part. Contient des transcriptions d'écrits d'élèves mineurs — mêmes règles que le
+    # reste de `data/` : jamais dans Git, jamais hors SSP Cloud.
+    reasoning_path = output_dir / f"{run_name}_reasoning.jsonl"
+    # Copies écartées des métriques : liste destinée à une VÉRIFICATION HUMAINE.
+    # Une copie vierge ou illisible peut l'être pour une mauvaise raison (mauvaise
+    # numérisation, seuil d'encre mal réglé) : elle doit être revue, pas oubliée.
+    ecartees_path = output_dir / f"{run_name}_copies_ecartees.csv"
 
     # Retire du fichier les copies dont aucun item n'est exploitable avant de
     # décider quoi sauter : sinon la reprise fige les échecs (cf. pipeline/purge).
@@ -189,6 +248,7 @@ def run_benchmark(
     non_transcrites: list[str] = []
     failed_copies: list[tuple[str, str]] = []  # (copy_id, message d'erreur)
     blank_copies: list[str] = []  # copies vierges auto-codées "0"
+    durees: list[float] = []  # temps par copie, copies vierges exclues (aucun appel modèle)
 
     # Modèle(s) inscrits dans CHAQUE ligne du JSONL, et pas seulement dans le nom du
     # fichier : c'est la seule façon de savoir quel modèle a produit une prédiction
@@ -203,6 +263,10 @@ def run_benchmark(
         modèle (thread-safe) et la trace Langfuse de la copie. Le résultat est
         consommé dans le thread principal.
         """
+        # Chronomètre bout en bout : chargement de l'image, appel(s) modèle et retries
+        # compris. C'est cette durée qui détermine le coût d'un run complet, et donc ce
+        # que coûte réellement l'activation du raisonnement.
+        debut = time.perf_counter()
         # Une trace Langfuse par copie (no-op si Langfuse indisponible, trace vaut None).
         with copy_trace(copy) as trace:
             # Détection copie vierge AVANT tout appel modèle : formulaire non rempli
@@ -218,7 +282,12 @@ def run_benchmark(
             except Exception as exc:  # noqa: BLE001 — image illisible : on remonte un échec
                 if trace is not None:
                     trace.update(level="ERROR", status_message=str(exc))
-                return _CopyOutcome(copy.copy_id, "failed", error=str(exc))
+                return _CopyOutcome(
+                    copy.copy_id,
+                    "failed",
+                    error=str(exc),
+                    duration_s=time.perf_counter() - debut,
+                )
 
             if is_blank:
                 prediction: CopyPrediction = CopyPrediction(
@@ -234,7 +303,12 @@ def run_benchmark(
                 except Exception as exc:  # noqa: BLE001 — on veut TOUT rattraper ici
                     if trace is not None:
                         trace.update(level="ERROR", status_message=str(exc))
-                    return _CopyOutcome(copy.copy_id, "failed", error=str(exc))
+                    return _CopyOutcome(
+                        copy.copy_id,
+                        "failed",
+                        error=str(exc),
+                        duration_s=time.perf_counter() - debut,
+                    )
 
                 if not prediction.transcribed:
                     if trace is not None:
@@ -244,10 +318,18 @@ def run_benchmark(
                             output={"transcribed": False, "n_attempts": prediction.n_attempts},
                         )
                     return _CopyOutcome(
-                        copy.copy_id, "non_transcribed", n_attempts=prediction.n_attempts
+                        copy.copy_id,
+                        "non_transcribed",
+                        n_attempts=prediction.n_attempts,
+                        duration_s=time.perf_counter() - debut,
                     )
 
+            duree = time.perf_counter() - debut
             pred_by_id = {it.item_id: it for it in prediction.items}
+            # Volume de raisonnement : un entier par ligne d'item (le TEXTE, lui, va dans
+            # le fichier annexe). Permet de croiser « le modèle a-t-il raisonné » avec
+            # l'accord item par item sans ouvrir un second fichier.
+            raisonnement = prediction.reasoning
             records = []
             n_accord = 0
             for item_id, expert_code in zip(copy.item_ids, copy.expert_codes, strict=True):
@@ -263,12 +345,30 @@ def run_benchmark(
                         "confidence": pred.confidence if pred else 0.0,
                         "transcription": pred.transcription if pred else None,
                         "comparaison": pred.comparaison if pred else None,
+                        # Permet de vérifier après coup que la CoT a bien précédé le
+                        # code : une CoT écrite après est décorative (cf. D7).
+                        "comparaison_avant_code": (pred.comparaison_avant_code if pred else None),
                         "raw_transcription": prediction.raw_transcription,
                         "approach": config.approach,
                         "model": model_name,
                         "model_stage2": model_stage2_name,
                         "blank": is_blank,
+                        # Motif d'exclusion des métriques, None si l'item compte.
+                        # Écrit ligne à ligne pour que toute relecture du JSONL
+                        # (métriques, notebooks, site) applique le même filtre.
+                        "exclusion": (
+                            "vierge"
+                            if is_blank
+                            else (None if reference.est_evaluable(expert_code) else "illisible")
+                        ),
                         "ink_ratio": densite_encre,
+                        "reasoning_chars": len(raisonnement) if raisonnement else 0,
+                        "duration_s": round(duree, 2),
+                        # Comptage déclaré par le modèle (option count_items) et
+                        # effectif attendu : deux entiers de niveau copie, recopiés
+                        # sur chaque ligne d'item pour rester analysables seuls.
+                        "n_items_lus_modele": prediction.n_items_lus,
+                        "n_items_attendus": len(copy.item_ids),
                     }
                 )
                 if pred_code == true_code:
@@ -281,15 +381,48 @@ def run_benchmark(
                         "n_items": len(records),
                         "raw_agreement": accord_copie,
                         "blank": is_blank,
+                        "duration_s": round(duree, 2),
+                        # Comptage déclaré par le modèle (option count_items) et
+                        # effectif attendu : deux entiers de niveau copie, recopiés
+                        # sur chaque ligne d'item pour rester analysables seuls.
+                        "n_items_lus_modele": prediction.n_items_lus,
+                        "n_items_attendus": len(copy.item_ids),
+                        "reasoning_chars": len(raisonnement) if raisonnement else 0,
                     }
                 )
                 trace.score_trace(name="raw_agreement", value=accord_copie)
 
             lines = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
-            return _CopyOutcome(copy.copy_id, "ok", lines=lines, blank=is_blank)
+            reasoning_line = ""
+            if raisonnement:
+                reasoning_line = (
+                    json.dumps(
+                        {
+                            "copy_id": copy.copy_id,
+                            "model": model_name,
+                            "approach": config.approach,
+                            "reasoning_chars": len(raisonnement),
+                            "reasoning": raisonnement,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            return _CopyOutcome(
+                copy.copy_id,
+                "ok",
+                lines=lines,
+                blank=is_blank,
+                reasoning_line=reasoning_line,
+                duration_s=duree,
+            )
 
-    def _consume(outcome: _CopyOutcome, f_pred: object) -> None:
+    def _consume(outcome: _CopyOutcome, f_pred: object, f_reason: object) -> None:
         """Écrit/comptabilise le résultat d'une copie (thread principal uniquement)."""
+        # Une copie vierge est codée sans appel modèle : sa durée (~0 s) n'est pas
+        # comparable et écraserait la médiane.
+        if not outcome.blank:
+            durees.append(outcome.duration_s)
         if outcome.status == "failed":
             logger.error(
                 "Échec sur la copie %s : %s. On passe à la suivante.",
@@ -311,16 +444,26 @@ def run_benchmark(
             # Flush + fsync : garantit que la copie écrite survit à un crash ultérieur.
             f_pred.flush()  # type: ignore[attr-defined]
             os.fsync(f_pred.fileno())  # type: ignore[attr-defined]
+            # Le raisonnement suit le MÊME cycle d'écriture que les prédictions, pour que
+            # les deux fichiers restent alignés copie par copie après un crash.
+            if outcome.reasoning_line:
+                f_reason.write(outcome.reasoning_line)  # type: ignore[attr-defined]
+                f_reason.flush()  # type: ignore[attr-defined]
+                os.fsync(f_reason.fileno())  # type: ignore[attr-defined]
 
     # Mode APPEND : conserve les copies déjà traitées lors d'une reprise. Le verrou est
     # pris AVANT la première écriture : un second run sur le même fichier échoue tout de
     # suite (LOCK_NB) au lieu d'y dupliquer des copies.
-    with _single_writer(out_path), open(out_path, "a", encoding="utf-8") as f_pred:
+    with (
+        _single_writer(out_path),
+        open(out_path, "a", encoding="utf-8") as f_pred,
+        open(reasoning_path, "a", encoding="utf-8") as f_reason,
+    ):
         desc = f"Évaluation ({config.name}, {workers} en parallèle)"
         if workers <= 1:
             # Chemin séquentiel (comportement historique), sans thread ni contexte copié.
             for copy in tqdm(copies_a_traiter, desc=desc):
-                _consume(_score_one(copy), f_pred)
+                _consume(_score_one(copy), f_pred, f_reason)
         else:
             # Chaque copie est soumise avec une COPIE du contexte courant, pour que la
             # trace Langfuse hérite des attributs de session (propagate_attributes est
@@ -331,7 +474,7 @@ def run_benchmark(
                     for copy in copies_a_traiter
                 ]
                 for future in tqdm(as_completed(futures), total=len(futures), desc=desc):
-                    _consume(future.result(), f_pred)
+                    _consume(future.result(), f_pred, f_reason)
 
     if failed_copies:
         with open(failed_path, "w", encoding="utf-8") as f:
@@ -345,6 +488,14 @@ def run_benchmark(
         )
 
     logger.info("Prédictions sauvegardées : %s", out_path)
+
+    # Fichier annexe : on ne le laisse traîner vide que pour rien. Vide = aucun modèle
+    # n'a produit de raisonnement (mode thinking coupé, ou modèle qui n'en a pas).
+    if reasoning_path.exists():
+        if reasoning_path.stat().st_size == 0:
+            reasoning_path.unlink()
+        else:
+            logger.info("Raisonnement natif sauvegardé : %s", reasoning_path)
 
     # Recharger tout le JSONL (copies de ce run + reprises) pour construire les métriques.
     y_true: list[str] = []
@@ -380,7 +531,44 @@ def run_benchmark(
             out_path.name,
         )
 
+    # Exclusion des métriques : copies vierges (auto-codées sans appel modèle) et
+    # items dont le code expert n'est pas un jugement (illisible, vide). Le motif est
+    # relu du JSONL quand il y est, et recalculé sinon — les fichiers écrits avant
+    # l'ajout du champ restent donc exploitables.
+    def _motif(rec: dict) -> str | None:
+        """Motif d'exclusion d'un item, ou None s'il compte dans les métriques."""
+        motif = rec.get("exclusion")
+        if motif is not None:
+            return str(motif)
+        if rec.get("blank"):
+            return "vierge"
+        if not reference.est_evaluable(str(rec["y_true"])):
+            return "illisible"
+        return None
+
+    motifs_par_copie: dict[str, Counter] = defaultdict(Counter)
+    total_par_copie: Counter = Counter()
     for rec in par_cle.values():
+        total_par_copie[rec["copy_id"]] += 1
+        motif = _motif(rec)
+        if motif is not None:
+            motifs_par_copie[rec["copy_id"]][motif] += 1
+
+    # Une copie est écartée ENTIÈREMENT quand elle est majoritairement inexploitable ;
+    # en dessous de ce seuil, seuls les items concernés sortent des métriques. Quelques
+    # mots illisibles sur une copie par ailleurs bien codée ne justifient pas de perdre
+    # les 70 autres items.
+    copies_ecartees: dict[str, str] = {}
+    for copy_id, compte in motifs_par_copie.items():
+        motif, n = compte.most_common(1)[0]
+        if n * 2 > total_par_copie[copy_id]:
+            copies_ecartees[copy_id] = motif
+
+    n_items_ecartes = 0
+    for rec in par_cle.values():
+        if _motif(rec) is not None or rec["copy_id"] in copies_ecartees:
+            n_items_ecartes += 1
+            continue
         y_true.append(rec["y_true"])
         y_pred.append(rec["y_pred"])
         confidences.append(rec.get("confidence"))
@@ -407,6 +595,34 @@ def run_benchmark(
             non_transcrites,
         )
 
+    if copies_ecartees:
+        with open(ecartees_path, "w", encoding="utf-8") as f:
+            f.write("copy_id;motif;items_concernes;items_total\n")
+            for copy_id, motif in sorted(copies_ecartees.items()):
+                f.write(
+                    f"{copy_id};{motif};{motifs_par_copie[copy_id][motif]};"
+                    f"{total_par_copie[copy_id]}\n"
+                )
+        par_motif = Counter(copies_ecartees.values())
+        logger.warning(
+            "%d copie(s) ÉCARTÉE(S) des métriques (%s) — à vérifier à l'œil, listées "
+            "dans %s. Elles restent dans le JSONL, marquées par le champ `exclusion`.",
+            len(copies_ecartees),
+            ", ".join(f"{n} {m}" for m, n in sorted(par_motif.items())),
+            ecartees_path.name,
+        )
+    elif ecartees_path.exists():
+        # Un run repris après correction ne doit pas laisser une liste périmée.
+        ecartees_path.unlink()
+
+    n_items_isoles = n_items_ecartes - sum(total_par_copie[c] for c in copies_ecartees)
+    if n_items_isoles > 0:
+        logger.info(
+            "%d item(s) isolément inévaluable(s) (illisible ou code vide) exclu(s) des "
+            "métriques, sur des copies par ailleurs conservées.",
+            n_items_isoles,
+        )
+
     if blank_copies:
         logger.info(
             "%d copie(s) vierge(s) détectée(s) (encre < %.1f%%) et auto-codée(s) "
@@ -415,6 +631,10 @@ def run_benchmark(
             blank_threshold * 100,
             blank_copies,
         )
+
+    ligne_durees = resume_durees(durees, workers, len(copies))
+    if ligne_durees:
+        logger.info(ligne_durees)
 
     metrics = compute_scoring_metrics(y_true, y_pred)
     return BenchmarkResult(
@@ -426,5 +646,8 @@ def run_benchmark(
         copy_ids=copy_ids,
         predictions_path=out_path,
         non_transcribed=non_transcrites,
-        blank_copies=blank_copies,
+        blank_copies=sorted(c for c, m in copies_ecartees.items() if m == "vierge"),
+        illegible_copies=sorted(c for c, m in copies_ecartees.items() if m == "illisible"),
+        n_items_ecartes=n_items_ecartes,
+        durations=durees,
     )

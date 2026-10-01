@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — MÉTHODE C (end-to-end), COMPTAGE+ ET EXEMPLES COMBINÉS
+# ═══════════════════════════════════════════════════════════════════════════
+#  Combine les deux seuls bras qui ont amélioré le codage sur au moins un modèle,
+#  chacun sur un mécanisme différent :
+#    - comptage+ (count_items + enforce_count + check_neighbours) : force le modèle
+#      à compter les items écrits, faire coïncider son codage avec ce comptage, et
+#      vérifier le voisinage N-1/N/N+1 de chaque item. Vise les DÉCALAGES
+#      d'alignement (un mot sauté qui décale tout ce qui suit).
+#    - show_error_examples : montre les fautes déjà observées sur chaque item. Vise
+#      la SOUS-DÉTECTION perceptive (90 % des fautes manquées sont des items que le
+#      modèle transcrit à l'identique du mot attendu — il ne voit pas la différence).
+#
+#  Résultats séparés sur 500 copies (écart de kappa contre la référence du même
+#  modèle) :
+#    - comptage+  : qwen3-6 +0,006 (ns) | qwen3-8 +0,036 ★ | gemma4 -0,075 ★ (pire bras)
+#    - exemples   : qwen3-6 +0,016 (ns, mesuré à 100) | qwen3-8 +0,079 ★ | gemma4 +0,041 ★
+#  Les deux mécanismes sont a priori indépendants (l'un force un compte exhaustif,
+#  l'autre affine la lecture d'un item déjà repéré) : rien ne garantit qu'ils
+#  s'additionnent, notamment sur gemma4-26b-moe où comptage+ dégrade fortement seul.
+#
+#  Lancer : uv run scripts/run_benchmark.py \
+#             --config configs/scoring/dictee_end2end_comptage_exemples.yaml \
+#             --limit 500 --model-name <modele>
+#  Sortie : data/processed/dictee_end2end_comptage_exemples_<modele>_predictions.jsonl
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: dictee_end2end_comptage_exemples
+seed: 42
+concurrency: 12
+
+approach: end_to_end
+
+model:
+  name: qwen3-6-35b-moe
+  kind: vlm
+  temperature: 0.0
+  # Les deux bras source tournaient déjà à 16384 avec une seule des deux consignes ;
+  # les cumuler allonge encore le prompt d'entrée (exemples : +44 %) et la sortie
+  # (comptage+ : n_items_lus, mêmes contraintes de cohérence). On garde 16384 avec
+  # une alerte de troncature active — si elle se déclenche, remonter à 24576/32768.
+  max_tokens: 16384
+  request_logprobs: true
+  max_retries: 2
+  disable_thinking: true
+  structured_output: true
+
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: C
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  chain_of_thought: false
+  # ← les trois consignes du bras comptage+
+  count_items: true
+  enforce_count: true
+  check_neighbours: true
+  # ← le paramètre du bras exemples
+  show_error_examples: true

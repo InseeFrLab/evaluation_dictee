@@ -1,0 +1,60 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Run scoring dictée — MÉTHODE C (end-to-end) AVEC COMPTAGE PRÉALABLE DES ITEMS
+# ═══════════════════════════════════════════════════════════════════════════
+#  Le modèle commence par COMPTER les items réellement écrits sur la copie (mots +
+#  ponctuation), l'inscrit dans `n_items_lus` — premier champ de la réponse — et le
+#  confronte au nombre d'items attendus avant de coder.
+#
+#  Hypothèse testée : le biais dominant mesuré le 11/09/2026 est que le modèle, ayant
+#  le texte de référence sous les yeux, code « présent » des mots que l'élève n'a
+#  jamais écrits (35 à 63 items absents hallucinés sur 110, selon le modèle). Compter
+#  d'abord devrait rendre cette hallucination visible au modèle lui-même.
+#
+#  `chain_of_thought: false` : c'est l'autre bras. Les activer ensemble rendrait tout
+#  écart inattribuable.
+#
+#  Lancer : uv run scripts/run_benchmark.py --config configs/scoring/dictee_end2end_comptage.yaml \
+#             --limit 50 --model-name <modele>
+#  Sortie : data/processed/dictee_end2end_comptage_<modele>_predictions.jsonl
+#           (colonnes `n_items_lus_modele` et `n_items_attendus`)
+# ═══════════════════════════════════════════════════════════════════════════
+name: dictee_end2end_comptage
+seed: 42
+concurrency: 12
+
+approach: end_to_end
+
+model:
+  name: qwen3-6-35b-moe
+  kind: vlm
+  temperature: 0.0
+  # 16384 : le champ « comparaison » par item coûte +28 à +46 % de tokens (mesuré
+  # sur les 83 items). 8192 passerait tout juste sur le codage texte, mais laisse
+  # trop peu de marge en end-to-end, où le modèle décrit aussi l'image. Une réponse
+  # tronquée code TOUTE la copie en « ? ».
+  max_tokens: 16384
+  request_logprobs: true
+  max_retries: 2
+  # Raisonnement natif COUPÉ : c'est l'autre bras, pas celui-ci.
+  disable_thinking: true
+  structured_output: true
+
+data:
+  corpus: dictee
+  images_path: s3://projet-production-ecrits-depp/dictee_2015/
+  labels_path: s3://projet-production-ecrits-depp/resultat_dictee_2015.csv
+  grid_path: configs/grille_dictee_2015.json
+  limit: null
+
+grid:
+  scheme: simplifiee
+
+prompt:
+  method: C
+  n_few_shot: 0
+  enforce_faithful: true
+  read_final_state: true
+  # ← LE paramètre de ce bras.
+  chain_of_thought: false
+  # ← LE paramètre de ce bras.
+  count_items: true

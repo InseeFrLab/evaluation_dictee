@@ -6,12 +6,14 @@ Usage : uv run scripts/run_benchmark.py --config configs/scoring/dictee_REFERENC
 from __future__ import annotations
 
 import argparse
+from statistics import median
 
 from langfuse import get_client
 
 from evaluation_dictee.config import Secrets, load_config, override_model_names
 from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.evaluation.calibration import referral_curve
+from evaluation_dictee.evaluation.metrics import compute_diagnostic_metrics
 from evaluation_dictee.models.factory import build_scorer
 from evaluation_dictee.pipeline.benchmark import run_benchmark
 from evaluation_dictee.utils.logging import get_logger
@@ -79,17 +81,32 @@ def main() -> None:
         api_key=secrets.llm_api_key,
     )
 
+    # Nature de chaque item : mot ou ponctuation. Les deux se ratent pour des
+    # raisons différentes (faute contre omission), et un kappa global les confond.
+    types_items = {it.item_id: it.type for it in grid.items}
+
     try:
         with experiment_run(config):
             result = run_benchmark(config, scorer)
+            diagnostic = compute_diagnostic_metrics(
+                result.y_true, result.y_pred, result.item_ids, types_items
+            )
             log_metrics(
                 config,
                 {
+                    **diagnostic,
                     "raw_agreement": result.metrics.raw_agreement,
                     "cohen_kappa": result.metrics.cohen_kappa,
                     "n_items": result.metrics.n_items,
                     "n_blank": len(result.blank_copies),
+                    "n_illegible": len(result.illegible_copies),
+                    "n_items_ecartes": result.n_items_ecartes,
                     "n_non_transcribed": len(result.non_transcribed),
+                    # Coût en temps : c'est la contrepartie à mettre en face du gain de
+                    # performance quand on active une option coûteuse (raisonnement natif).
+                    "median_seconds_per_copy": (
+                        round(median(result.durations), 2) if result.durations else 0.0
+                    ),
                 },
             )
     finally:
@@ -100,10 +117,28 @@ def main() -> None:
     logger.info("Accord brut : %.1f%%", result.metrics.raw_agreement * 100)
     logger.info("Kappa de Cohen : %.3f", result.metrics.cohen_kappa)
     logger.info(
-        "Copies vierges auto-codées « 0 » : %d | copies non transcrites (exclues) : %d",
+        "Copies écartées des métriques : %d vierge(s) + %d illisible(s) = %d item(s) "
+        "exclus | copies non transcrites : %d",
         len(result.blank_copies),
+        len(result.illegible_copies),
+        result.n_items_ecartes,
         len(result.non_transcribed),
     )
+    if result.illegible_copies or result.blank_copies:
+        logger.info(
+            "Ces copies sont à VÉRIFIER À L'ŒIL (numérisation dégradée, seuil d'encre "
+            "mal réglé…) : voir data/processed/<run>_copies_ecartees.csv"
+        )
+
+    if diagnostic:
+        logger.info(
+            "Diagnostic : %.1f %% des fautes non détectées | biais sur le taux de "
+            "faute %+.1f pts | kappa mots %.3f vs ponctuation %.3f",
+            diagnostic.get("taux_sous_detection", float("nan")) * 100,
+            diagnostic.get("biais_taux_faute_pts", float("nan")),
+            diagnostic.get("kappa_mots", float("nan")),
+            diagnostic.get("kappa_ponctuation", float("nan")),
+        )
 
     logger.info("Courbe de renvoi humain :")
     for point in referral_curve(result.y_true, result.y_pred, result.confidences):

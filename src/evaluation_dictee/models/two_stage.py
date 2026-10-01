@@ -18,7 +18,13 @@ from evaluation_dictee.config import ModelConfig, PromptConfig
 from evaluation_dictee.data.grid import GridItem
 from evaluation_dictee.data.loaders import Copy, load_image
 from evaluation_dictee.models.base import CODE_NON_PARSE, CopyPrediction, ItemPrediction, Scorer
-from evaluation_dictee.models.vlm import _image_to_data_url, _items_json_schema
+from evaluation_dictee.models.vlm import (
+    _image_to_data_url,
+    _items_json_schema,
+    extract_reasoning,
+    log_if_truncated,
+    thinking_kwargs,
+)
 from evaluation_dictee.pipeline.alignment import best_realignment, needs_realignment
 from evaluation_dictee.pipeline.prompts import (
     attach_image,
@@ -40,7 +46,7 @@ _TRANSCRIPTION_SCHEMA: dict[str, Any] = {
 def _request_kwargs(
     model_config: ModelConfig, schema: dict[str, Any], schema_name: str
 ) -> dict[str, Any]:
-    """Options d'appel communes aux deux étapes : décodage contraint et coupure du <think>.
+    """Options d'appel communes aux deux étapes : décodage contraint et mode thinking.
 
     Ces options étaient appliquées à l'end-to-end (`VLMScorer`) mais pas ici, d'où les
     nombreux « JSON non extractible » à l'étape 2 : sans `response_format`, le modèle
@@ -54,14 +60,12 @@ def _request_kwargs(
     Returns:
         Les kwargs à passer à `chat.completions.create` (éventuellement vides).
     """
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = {"extra_body": thinking_kwargs(model_config)}
     if model_config.structured_output:
         kwargs["response_format"] = {
             "type": "json_schema",
             "json_schema": {"name": schema_name, "schema": schema},
         }
-    if model_config.disable_thinking:
-        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
     return kwargs
 
 
@@ -190,6 +194,7 @@ class TwoStageScorer(Scorer):
                 messages=messages,
                 **request_kwargs,
             )
+            log_if_truncated(response, copy.copy_id, self.model_config.max_tokens)
             content = response.choices[0].message.content or "{}"
             transcription = self._parse_transcription(content)
             if transcription.strip():
@@ -253,9 +258,14 @@ class TwoStageScorer(Scorer):
                 messages=messages,
                 **request_kwargs,
             )
-            content = response.choices[0].message.content or ""
+            log_if_truncated(response, copy.copy_id, self.model_config_stage2.max_tokens)
+            message = response.choices[0].message
+            content = message.content or ""
             if _extract_items_from_content(content):
-                return self._parse_coding(copy, content)
+                prediction = self._parse_coding(copy, content)
+                # Raisonnement de l'étape 2 : c'est elle qui décide des codes.
+                prediction.reasoning = extract_reasoning(message)
+                return prediction
             logger.warning(
                 "Étape 2 : JSON non extractible à l'essai %d/%d pour %s. Nouvel essai.",
                 attempt + 1,

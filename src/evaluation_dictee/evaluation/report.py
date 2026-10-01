@@ -14,6 +14,7 @@ import fsspec
 import pandas as pd
 from sklearn.metrics import cohen_kappa_score, confusion_matrix
 
+from evaluation_dictee.data import reference
 from evaluation_dictee.evaluation.statistics import wilson_interval
 
 
@@ -43,7 +44,71 @@ def load_predictions(predictions_path: str | Path) -> pd.DataFrame:
     df = pd.DataFrame(records)
     if not df.empty and {"copy_id", "item_id"}.issubset(df.columns):
         df = df.drop_duplicates(subset=["copy_id", "item_id"], keep="last").reset_index(drop=True)
+    return marquer_exclusions(df)
+
+
+def marquer_exclusions(df: pd.DataFrame) -> pd.DataFrame:
+    """Garantit une colonne `exclusion` (`vierge`, `illisible`, ou None) sur le DataFrame.
+
+    La colonne est écrite par le pipeline depuis la décision D8, mais les fichiers
+    produits avant ne la portent pas : elle est alors reconstituée depuis `blank` et
+    le code expert. Tous les consommateurs — site, notebooks, rapports — disposent
+    ainsi de la même information, qu'ils choisissent ensuite de filtrer ou non.
+
+    Args:
+        df: prédictions chargées.
+
+    Returns:
+        Le DataFrame, avec une colonne `exclusion` renseignée.
+    """
+    if df.empty:
+        return df
+    if "exclusion" not in df.columns:
+        df = df.assign(exclusion=None)
+    manquant = df["exclusion"].isna()
+    if "blank" in df.columns:
+        df.loc[manquant & df["blank"].fillna(False).astype(bool), "exclusion"] = "vierge"
+        manquant = df["exclusion"].isna()
+    if "y_true" in df.columns:
+        inevaluable = ~df["y_true"].astype(str).map(reference.est_evaluable)
+        df.loc[manquant & inevaluable, "exclusion"] = "illisible"
     return df
+
+
+def filtrer_evaluables(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Retire les lignes écartées des métriques (décision D8) et dit ce qui a été retiré.
+
+    Une copie vierge est auto-codée sans appel modèle, et un item illisible n'a reçu
+    aucun jugement de l'expert : les compter attribuerait au modèle un défaut
+    d'annotation ou de numérisation. Sur l'échantillon de 500 copies, les inclure
+    surestimait le kappa d'environ 0,02 — les copies vierges y entrant à 100 %
+    d'accord sans qu'aucun modèle n'ait été appelé.
+
+    Args:
+        df: prédictions, marquées ou non (`marquer_exclusions` est appliqué au besoin).
+
+    Returns:
+        Le couple (prédictions évaluables, nombre de COPIES retirées par motif).
+    """
+    if df.empty:
+        return df, {}
+    df = marquer_exclusions(df)
+    inexploitable = df["exclusion"].notna()
+
+    # Même règle que le pipeline : une copie MAJORITAIREMENT inexploitable sort en
+    # entier, sinon seuls ses items concernés sortent. Deux règles divergentes
+    # donneraient deux chiffres différents pour un même run selon l'outil qui le lit.
+    part = inexploitable.groupby(df["copy_id"]).mean()
+    copies_hs = set(part[part > 0.5].index)
+
+    a_retirer = inexploitable | df["copy_id"].isin(copies_hs)
+    exclues = df[a_retirer]
+    motifs = exclues["exclusion"].fillna("copie inexploitable")
+    retirees = {
+        motif: int(exclues.loc[motifs == motif, "copy_id"].nunique())
+        for motif in sorted(motifs.unique())
+    }
+    return df[~a_retirer].reset_index(drop=True), retirees
 
 
 def per_item_metrics(df: pd.DataFrame, level: float = 0.95) -> pd.DataFrame:
