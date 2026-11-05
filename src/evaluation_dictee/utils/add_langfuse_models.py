@@ -1,8 +1,8 @@
 """Enregistre dans Langfuse un prix par token THÉORIQUE (GPU amorti) pour les modèles llm.lab.
 
 Modèles auto-hébergés sans tarif commercial, afin que Langfuse valorise chaque trace.
-Toutes les constantes de coût ci-dessous sont des ordres de grandeur à AJUSTER
-après mesure du débit réel. Montants raisonnés en euros (l'UI Langfuse affiche « $ »).
+Les prix viennent de `utils/model_prices.py` (ordres de grandeur à AJUSTER après mesure
+du débit réel). Montants raisonnés en euros (l'UI Langfuse affiche « $ »).
 
 Usage :
     uv run --env-file .env add-langfuse-models
@@ -16,34 +16,9 @@ import re
 import httpx
 
 from evaluation_dictee.utils.logging import get_logger
+from evaluation_dictee.utils.model_prices import DEBIT_SORTIE_TOK_S, prix_par_token
 
 logger = get_logger(__name__)
-
-# ── Hypothèses de coût GPU amorti (À AJUSTER) ────────────────────────────────
-COUT_GPU_EUR_H = 2.5  # coût horaire d'une H100 (référence cloud public)
-RATIO_ENTREE_SORTIE = 0.25  # un token d'entrée coûte ~1/4 d'un token de sortie
-
-# Débit de SORTIE agrégé sous charge (tokens/s), par modèle. À mesurer sur llm.lab.
-DEBIT_SORTIE_TOK_S: dict[str, float] = {
-    "gemma4-26b-moe": 2500,  # MoE ~26B total
-    "qwen3.6-35b-moe": 4000,  # MoE 35B total / ~3B actifs → plus rapide
-}
-
-
-def _prix_par_token(debit_tok_s: float) -> tuple[float, float]:
-    """Renvoie (prix_entrée, prix_sortie) en €/token pour un débit donné.
-
-    Args:
-        debit_tok_s: Débit de sortie agrégé du modèle, en tokens/seconde.
-
-    Returns:
-        Le couple (prix d'entrée, prix de sortie) en €/token, l'entrée valant
-        `RATIO_ENTREE_SORTIE` fois la sortie.
-    """
-    # Entrée ≈ 1/4 de la sortie : le prefill est plus rapide que le decode.
-    prix_sortie = COUT_GPU_EUR_H / (debit_tok_s * 3600)
-    prix_entree = prix_sortie * RATIO_ENTREE_SORTIE
-    return prix_entree, prix_sortie
 
 
 def _auth_and_base() -> tuple[tuple[str, str], str]:
@@ -77,7 +52,7 @@ def push_models() -> None:
     url = f"{base}/api/public/models"
 
     for model_name, debit in DEBIT_SORTIE_TOK_S.items():
-        prix_entree, prix_sortie = _prix_par_token(debit)
+        prix_entree, prix_sortie = prix_par_token(debit)
         payload = {
             "modelName": model_name,
             # Ancrage strict sur le nom exact (échappé), insensible à la casse.

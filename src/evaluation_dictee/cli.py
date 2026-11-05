@@ -6,7 +6,6 @@ Exemple : `eval-ecrit benchmark configs/scoring/dictee_REFERENCE.yaml`
 from __future__ import annotations
 
 import typer
-from langfuse import get_client
 from rich.console import Console
 from rich.table import Table
 
@@ -16,7 +15,8 @@ from evaluation_dictee.evaluation.metrics import ScoringMetrics
 from evaluation_dictee.models.factory import build_scorer
 from evaluation_dictee.pipeline.benchmark import run_benchmark
 from evaluation_dictee.utils.s3_export import export_run, resolve_run_name
-from evaluation_dictee.utils.tracking import experiment_run, log_metrics
+from evaluation_dictee.utils.tracking import experiment_run, flush, log_metrics
+from evaluation_dictee.utils.usage import usage_metrics
 
 app = typer.Typer(help="Évaluation automatique de la production d'écrit (DEPP × SSP Lab).")
 console = Console()
@@ -46,7 +46,7 @@ def benchmark(
     """Lance un benchmark à partir d'un fichier de configuration YAML.
 
     Charge la config et les secrets, construit le scorer, exécute le run (tracé
-    dans Langfuse), journalise les métriques puis les affiche.
+    dans MLflow), journalise les métriques puis les affiche.
 
     Args:
         config_path: Chemin du fichier YAML de configuration du run.
@@ -82,11 +82,12 @@ def benchmark(
                     "raw_agreement": result.metrics.raw_agreement,
                     "cohen_kappa": result.metrics.cohen_kappa,
                     "n_items": result.metrics.n_items,
+                    **usage_metrics(result.usages),
                 },
             )
     finally:
-        # Flush explicite : Langfuse envoie en asynchrone, sinon les dernières traces sont perdues.
-        get_client().flush()
+        # Flush explicite : MLflow envoie en asynchrone, sinon les dernières traces sont perdues.
+        flush()
 
     _print_metrics(result.metrics)
 

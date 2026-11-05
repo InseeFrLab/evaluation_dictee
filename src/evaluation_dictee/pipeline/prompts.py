@@ -2,24 +2,32 @@
 
 Point critique : les élisions (n', S', l', d', qu') sont des items SÉPARÉS du mot suivant ;
 sans consigne explicite le modèle les recolle et décale tous les items suivants.
-Chaque prompt est un template chat versionné dans Langfuse, avec repli local si indisponible.
+Chaque prompt est un template chat versionné (Langfuse ou registre MLflow selon
+`TRACKING_BACKEND`), avec repli local si indisponible.
 """
 
 from __future__ import annotations
 
 import json
-from typing import cast
-
-from langfuse import get_client
-from langfuse.model import ChatMessageDict, ChatPromptClient
+from typing import TypedDict, cast
 
 from evaluation_dictee.config import PromptConfig
 from evaluation_dictee.data.grid import GridItem
+from evaluation_dictee.utils.tracking import load_chat_prompt
 
-# Noms sous lesquels les prompts sont versionnés dans Langfuse.
+
+class ChatMessageDict(TypedDict):
+    """Message de chat (rôle + contenu), format des templates versionnés."""
+
+    role: str
+    content: str
+
+
+# Noms sous lesquels les prompts sont versionnés (Langfuse ET registre MLflow).
+
 PROMPT_DICTATION = "Dictation"
 PROMPT_TRANSCRIPTION = "Transcription"
-PROMPT_TEXT_CODING = "Text coding"
+PROMPT_TEXT_CODING = "Text-coding"  # sans espace : MLflow les interdit dans un nom de prompt
 
 _GRILLE_SIMPLIFIEE = (
     "Pour chaque item, attribue un code :\n"
@@ -308,7 +316,7 @@ _TEMPLATE_TEXT_CODING: list[ChatMessageDict] = [
     },
 ]
 
-# Registre exposé pour l'initialisation Langfuse (utils/add_langfuse_prompt.py).
+# Registre exposé pour l'initialisation Langfuse/MLflow (utils/add_*_prompt.py).
 PROMPT_TEMPLATES: dict[str, list[ChatMessageDict]] = {
     PROMPT_DICTATION: _TEMPLATE_DICTATION,
     PROMPT_TRANSCRIPTION: _TEMPLATE_TRANSCRIPTION,
@@ -442,7 +450,7 @@ def _format_items(
 def _render_local(
     messages: list[ChatMessageDict], variables: dict[str, object]
 ) -> list[ChatMessageDict]:
-    """Compile un template localement (repli si Langfuse est indisponible).
+    """Compile un template localement (repli si le backend de suivi est indisponible).
 
     Args:
         messages: messages du template, avec placeholders `{{clé}}`.
@@ -465,20 +473,19 @@ def _compile_prompt(
     fallback: list[ChatMessageDict],
     variables: dict[str, object],
 ) -> list[ChatMessageDict]:
-    """Récupère et compile un prompt chat Langfuse (repli sur `fallback` local si indisponible).
+    """Récupère et compile un prompt chat versionné (repli sur `fallback` local si indisponible).
 
     Args:
-        name: nom du prompt versionné dans Langfuse.
-        fallback: template local utilisé si Langfuse est indisponible.
+        name: nom du prompt versionné dans le backend de suivi.
+        fallback: template local utilisé si le backend est indisponible.
         variables: valeurs à injecter dans le template.
 
     Returns:
         Les messages compilés (role/content uniquement, placeholders vides écartés).
     """
     try:
-        prompt = get_client().get_prompt(name, type="chat", fallback=fallback)
-        messages = prompt.compile(**variables)
-    except Exception:  # pragma: no cover - repli défensif si Langfuse indisponible
+        messages = load_chat_prompt(name, fallback, variables)
+    except Exception:  # pragma: no cover - repli défensif si le backend est indisponible
         messages = _render_local(fallback, variables)
     # compile() peut renvoyer des placeholders sans "content" ; on ne garde que role/content.
     plain = cast("list[dict[str, object]]", messages)
@@ -511,22 +518,6 @@ def attach_image(messages: list[ChatMessageDict], image_data_url: str) -> list[d
         }
     )
     return out
-
-
-def fetch_prompt(name: str) -> ChatPromptClient | None:
-    """Renvoie l'objet prompt Langfuse pour lier une trace à sa version (None si repli local).
-
-    Args:
-        name: nom du prompt versionné dans Langfuse.
-
-    Returns:
-        L'objet prompt Langfuse, ou None si Langfuse est indisponible ou renvoie le repli.
-    """
-    try:
-        prompt = get_client().get_prompt(name, type="chat", fallback=PROMPT_TEMPLATES[name])
-    except Exception:  # pragma: no cover - repli défensif si Langfuse indisponible
-        return None
-    return None if prompt.is_fallback else prompt
 
 
 def build_dictation_prompt(

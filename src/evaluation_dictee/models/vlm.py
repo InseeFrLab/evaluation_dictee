@@ -7,7 +7,6 @@ import io
 import json
 from typing import Any, cast
 
-from langfuse.openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from PIL import Image
 
@@ -18,11 +17,13 @@ from evaluation_dictee.models.base import CODE_NON_PARSE, CopyPrediction, ItemPr
 from evaluation_dictee.pipeline.alignment import best_realignment, needs_realignment
 from evaluation_dictee.pipeline.prompts import (
     PROMPT_DICTATION,
+    PROMPT_TEMPLATES,
     attach_image,
     build_dictation_prompt,
-    fetch_prompt,
 )
 from evaluation_dictee.utils.logging import get_logger
+from evaluation_dictee.utils.tracking import llm_trace_kwargs, openai_client_class
+from evaluation_dictee.utils.usage import record_usage
 
 logger = get_logger(__name__)
 
@@ -218,7 +219,7 @@ class VLMScorer(Scorer):
         """
         self.model_config = model_config
         self.prompt_config = prompt_config
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.client = openai_client_class()(base_url=base_url, api_key=api_key)
         self.grid_items = grid_items
         self.scheme = scheme
         self._items_by_id = {it.item_id: it for it in grid_items}
@@ -248,9 +249,8 @@ class VLMScorer(Scorer):
                 _image_to_data_url(image),
             ),
         )
-        # Lie la génération à la version du prompt dans les traces Langfuse (no-op si hors ligne).
-        prompt_ref = fetch_prompt(PROMPT_DICTATION)
-        trace_kwargs: dict[str, Any] = {"langfuse_prompt": prompt_ref} if prompt_ref else {}
+        # Lie la génération à la version du prompt (Langfuse ; automatique avec MLflow).
+        trace_kwargs = llm_trace_kwargs(PROMPT_DICTATION, PROMPT_TEMPLATES[PROMPT_DICTATION])
 
         response_format_kwargs: dict[str, Any] = {}
         if self.model_config.structured_output:
@@ -278,6 +278,7 @@ class VLMScorer(Scorer):
                 **response_format_kwargs,
                 **trace_kwargs,
             )
+            record_usage(self.model_config.name, response)
             message = response.choices[0].message
             log_if_truncated(response, copy.copy_id, self.model_config.max_tokens)
             content = message.content or "{}"

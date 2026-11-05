@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import io
+import random
 from dataclasses import dataclass, field
 
 import fsspec
@@ -109,6 +110,7 @@ def load_dataset(
     images_dir: str,
     labels_csv: str,
     limit: int | None = None,
+    sample_seed: int | None = None,
 ) -> list[Copy]:
     """Construit la liste des copies à partir des images et du CSV de labels.
 
@@ -118,14 +120,19 @@ def load_dataset(
         images_dir: Dossier (local ou S3) contenant les imagettes.
         labels_csv: Chemin du CSV des codes experts.
         limit: Nombre maximal de copies à charger (toutes si None).
+        sample_seed: Si renseignée, les `limit` copies sont tirées au hasard (graine fixe,
+            donc reproductible) au lieu des premières par identifiant.
 
     Returns:
-        La liste des copies trouvées, triées par identifiant.
+        La liste des copies trouvées, triées par identifiant (y compris après tirage).
     """
     labels = load_labels(labels_csv)
 
     copies: list[Copy] = []
-    for copy_id in sorted(labels):
+    copy_ids = sorted(labels)
+    if sample_seed is not None:
+        random.Random(sample_seed).shuffle(copy_ids)
+    for copy_id in copy_ids:
         image_path = _join(images_dir, copy_id)
         if not _exists(image_path):
             continue
@@ -140,4 +147,4 @@ def load_dataset(
         )
         if limit is not None and len(copies) >= limit:
             break
-    return copies
+    return sorted(copies, key=lambda c: c.copy_id)

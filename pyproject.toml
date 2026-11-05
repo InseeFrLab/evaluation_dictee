@@ -28,12 +28,13 @@ dependencies = [
     # JupyterLab, ce qui cassait `uv sync` seul (et donc la CI).
     "nbformat>=5.10",
     "nbconvert>=7.16",
-    # Suivi d'expériences (traces LLM, prompts, scores)
-    "langfuse>=4,<5",
     # Confort
     "tqdm>=4.66",
     "rich>=13.7",
     "typer>=0.12",           # CLI simple et typée
+    # Suivi d'expériences (traces LLM, prompts, scores) : backend au choix, TRACKING_BACKEND
+    "langfuse>=4,<5",
+    "mlflow>=3.5",
 ]
 
 [project.optional-dependencies]
@@ -73,6 +74,7 @@ dev = [
 eval-ecrit = "evaluation_dictee.cli:app"
 add-langfuse-prompt = "evaluation_dictee.utils.add_langfuse_prompt:push_prompts"
 add-langfuse-models = "evaluation_dictee.utils.add_langfuse_models:push_models"
+add-mlflow-prompt = "evaluation_dictee.utils.add_mlflow_prompt:push_prompts"
 
 [build-system]
 requires = ["hatchling"]

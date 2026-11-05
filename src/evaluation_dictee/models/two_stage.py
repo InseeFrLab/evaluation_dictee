@@ -9,9 +9,6 @@ import json
 import re
 from typing import Any, cast
 
-# Client instrumenté Langfuse (comme VLMScorer) : sans lui, les appels des deux étapes
-# n'apparaissent pas comme « générations » sous la trace de la copie.
-from langfuse.openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from evaluation_dictee.config import ModelConfig, PromptConfig
@@ -32,6 +29,8 @@ from evaluation_dictee.pipeline.prompts import (
     build_transcription_prompt,
 )
 from evaluation_dictee.utils.logging import get_logger
+from evaluation_dictee.utils.tracking import openai_client_class
+from evaluation_dictee.utils.usage import record_usage
 
 logger = get_logger(__name__)
 
@@ -158,7 +157,7 @@ class TwoStageScorer(Scorer):
         self.model_config = model_config
         self.model_config_stage2 = model_config_stage2 or model_config
         self.prompt_config = prompt_config
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.client = openai_client_class()(base_url=base_url, api_key=api_key)
         self.grid_items = grid_items
         self.scheme = scheme
         self._items_by_id = {it.item_id: it for it in grid_items}
@@ -194,6 +193,7 @@ class TwoStageScorer(Scorer):
                 messages=messages,
                 **request_kwargs,
             )
+            record_usage(self.model_config.name, response)
             log_if_truncated(response, copy.copy_id, self.model_config.max_tokens)
             content = response.choices[0].message.content or "{}"
             transcription = self._parse_transcription(content)
@@ -258,6 +258,7 @@ class TwoStageScorer(Scorer):
                 messages=messages,
                 **request_kwargs,
             )
+            record_usage(self.model_config_stage2.name, response)
             log_if_truncated(response, copy.copy_id, self.model_config_stage2.max_tokens)
             message = response.choices[0].message
             content = message.content or ""

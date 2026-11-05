@@ -8,8 +8,6 @@ from __future__ import annotations
 import argparse
 from statistics import median
 
-from langfuse import get_client
-
 from evaluation_dictee.config import Secrets, load_config, override_model_names
 from evaluation_dictee.data.grid import load_grid
 from evaluation_dictee.evaluation.calibration import referral_curve
@@ -17,7 +15,13 @@ from evaluation_dictee.evaluation.metrics import compute_diagnostic_metrics
 from evaluation_dictee.models.factory import build_scorer
 from evaluation_dictee.pipeline.benchmark import run_benchmark
 from evaluation_dictee.utils.logging import get_logger
-from evaluation_dictee.utils.tracking import experiment_run, log_metrics
+from evaluation_dictee.utils.tracking import (
+    experiment_run,
+    flush,
+    log_metrics,
+    timing_summary,
+)
+from evaluation_dictee.utils.usage import usage_metrics
 
 logger = get_logger(__name__)
 
@@ -102,6 +106,7 @@ def main() -> None:
                     "n_illegible": len(result.illegible_copies),
                     "n_items_ecartes": result.n_items_ecartes,
                     "n_non_transcribed": len(result.non_transcribed),
+                    **usage_metrics(result.usages),
                     # Coût en temps : c'est la contrepartie à mettre en face du gain de
                     # performance quand on active une option coûteuse (raisonnement natif).
                     "median_seconds_per_copy": (
@@ -110,10 +115,14 @@ def main() -> None:
                 },
             )
     finally:
-        # Langfuse envoie les traces en asynchrone : flush obligatoire sinon les
+        # MLflow envoie les traces en asynchrone : flush obligatoire sinon les
         # dernières traces sont perdues si le script se termine avant l'envoi.
-        get_client().flush()
+        flush()
 
+    logger.info(
+        "Temps de suivi (s) : %s",
+        ", ".join(f"{k}={v:.2f}" for k, v in timing_summary().items()),
+    )
     logger.info("Accord brut : %.1f%%", result.metrics.raw_agreement * 100)
     logger.info("Kappa de Cohen : %.3f", result.metrics.cohen_kappa)
     logger.info(

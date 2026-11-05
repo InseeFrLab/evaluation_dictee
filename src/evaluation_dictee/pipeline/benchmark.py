@@ -34,6 +34,7 @@ from evaluation_dictee.models.base import (
 from evaluation_dictee.pipeline.purge import preparer_reprise
 from evaluation_dictee.utils.logging import get_logger
 from evaluation_dictee.utils.tracking import copy_trace
+from evaluation_dictee.utils.usage import CopyUsage, start_meter
 
 logger = get_logger(__name__)
 
@@ -62,6 +63,9 @@ class BenchmarkResult:
     # médiane par un facteur arbitraire). Ne couvre que les copies traitées par CE
     # lancement, pas celles reprises d'un lancement précédent.
     durations: list[float] = field(default_factory=list)
+    # Consommation LLM (tokens, coût) de CHAQUE copie traitée par ce lancement, échecs
+    # compris : un appel qui échoue ou n'est pas exploitable coûte quand même.
+    usages: list[CopyUsage] = field(default_factory=list)
 
 
 @dataclass
@@ -80,6 +84,7 @@ class _CopyOutcome:
     # de ~13 000 caractères.
     reasoning_line: str = ""
     duration_s: float = 0.0  # temps de traitement de la copie, bout en bout
+    usage: CopyUsage = field(default_factory=CopyUsage)  # tokens et coût de la copie
 
 
 @contextmanager
@@ -190,6 +195,7 @@ def run_benchmark(
         images_dir=config.data.images_path,
         labels_csv=config.data.labels_path,
         limit=config.data.limit,
+        sample_seed=config.data.sample_seed,
     )
 
     # Échec explicite si aucune copie — évite la boucle silencieuse
@@ -249,6 +255,7 @@ def run_benchmark(
     failed_copies: list[tuple[str, str]] = []  # (copy_id, message d'erreur)
     blank_copies: list[str] = []  # copies vierges auto-codées "0"
     durees: list[float] = []  # temps par copie, copies vierges exclues (aucun appel modèle)
+    usages: list[CopyUsage] = []  # tokens et coût par copie (mêmes copies que `durees`)
 
     # Modèle(s) inscrits dans CHAQUE ligne du JSONL, et pas seulement dans le nom du
     # fichier : c'est la seule façon de savoir quel modèle a produit une prédiction
@@ -257,6 +264,13 @@ def run_benchmark(
     model_stage2_name = config.model_stage2.name if config.model_stage2 is not None else None
 
     def _score_one(copy: Copy) -> _CopyOutcome:
+        """Score une copie en mesurant sa consommation LLM (exécuté dans un thread worker)."""
+        usage = start_meter()
+        outcome = _score_one_inner(copy, usage)
+        outcome.usage = usage
+        return outcome
+
+    def _score_one_inner(copy: Copy, usage: CopyUsage) -> _CopyOutcome:
         """Score une copie et prépare ses lignes JSONL (exécuté dans un thread worker).
 
         Aucune écriture fichier ni mutation d'état partagé ici : uniquement l'appel
@@ -390,7 +404,17 @@ def run_benchmark(
                         "reasoning_chars": len(raisonnement) if raisonnement else 0,
                     }
                 )
-                trace.score_trace(name="raw_agreement", value=accord_copie)
+                # Mêmes scores par copie pour Langfuse et MLflow (tokens et coût viennent
+                # de `usage`, pas de l'outil, donc identiques des deux côtés).
+                for nom, valeur in {
+                    "raw_agreement": accord_copie,
+                    "duration_s": duree,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cost_eur": usage.cost_eur,
+                    "n_attempts": prediction.n_attempts,
+                }.items():
+                    trace.score_trace(name=nom, value=float(valeur))
 
             lines = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
             reasoning_line = ""
@@ -423,6 +447,7 @@ def run_benchmark(
         # comparable et écraserait la médiane.
         if not outcome.blank:
             durees.append(outcome.duration_s)
+            usages.append(outcome.usage)
         if outcome.status == "failed":
             logger.error(
                 "Échec sur la copie %s : %s. On passe à la suivante.",
@@ -650,4 +675,5 @@ def run_benchmark(
         illegible_copies=sorted(c for c, m in copies_ecartees.items() if m == "illisible"),
         n_items_ecartes=n_items_ecartes,
         durations=durees,
+        usages=usages,
     )
